@@ -565,40 +565,57 @@ fn draw_tensor_comparison(f: &mut Frame, state: &AppState, area: Rect) {
         }
     };
 
+    // Get model names for title
+    let title = if let Some(ref diff) = state.diff {
+        let a = diff.model_a.as_deref().unwrap_or("Model A");
+        let b = diff.model_b.as_deref().unwrap_or("Model B");
+        format!(" {} → {} ", truncate_path(a, 20), truncate_path(b, 20))
+    } else {
+        " Tensor Comparison ".to_string()
+    };
+
     let block = Block::default()
-        .title(" Tensor Comparison ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(BORDER))
         .style(Style::default().bg(SURFACE));
 
     let mut lines = vec![];
 
-    // Layer info
+    // Layer info with model context
     lines.push(Line::from(vec![
         Span::styled("Layer: ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled(&layer.layer_name, Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
         Span::styled("  |  Type: ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled(layer.layer_type.to_string(), Style::default().fg(ACCENT_INFO)),
+        Span::styled(layer.layer_type.to_string().to_uppercase(), Style::default().fg(ACCENT_INFO).add_modifier(Modifier::BOLD)),
     ]));
 
     lines.push(Line::from(vec![
-        Span::styled("Aggregate L2: ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled(format!("{:.6}", layer.aggregate_l2), Style::default().fg(l2_color(layer.aggregate_l2))),
+        Span::styled("L2: ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled(format!("{:.6}", layer.aggregate_l2), Style::default().fg(l2_color(layer.aggregate_l2)).add_modifier(Modifier::BOLD)),
         Span::styled("  |  Params: ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled(format_params(layer.param_count), Style::default().fg(TEXT_PRIMARY)),
         Span::styled("  |  Tensors: ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled(layer.tensors.len().to_string(), Style::default().fg(TEXT_PRIMARY)),
+        Span::styled("  |  Changed: ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled(
+            format!("{}/{}", layer.tensors.iter().filter(|t| t.changed).count(), layer.tensors.len()),
+            Style::default().fg(if layer.tensors.iter().any(|t| t.changed) { RED } else { GREEN }),
+        ),
     ]));
 
     lines.push(Line::from(""));
 
-    // Table header with EXACT column widths
-    let header = format!(
-        "{:^2} {:<24} {:>12} {:>10} {:>10} {:>12} {:>8}",
-        "", "Tensor Name", "Shape", "L2", "Cosine", "Max Delta", "Status"
-    );
+    // Table header
+    let header_prefix = "  ";
     lines.push(Line::from(vec![
-        Span::styled(header, Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+        Span::styled(header_prefix, Style::default()),
+        Span::styled(format!("{:<24}", "Tensor Name"), Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{:>12}", "Shape"), Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{:>10}", "L2"), Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{:>10}", "Cosine"), Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{:>12}", "Max Delta"), Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{:>8}", "Status"), Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("─".repeat(82), Style::default().fg(BORDER)),
@@ -616,24 +633,56 @@ fn draw_tensor_comparison(f: &mut Frame, state: &AppState, area: Rect) {
             shape_str
         };
 
-        let row = format!(
-            " {:^1} {:<24} {:>12} {:>10.4} {:>10.4} {:>12.6} {:>8}",
-            prefix,
-            truncate_str(&tensor.name, 24),
-            shape_display,
-            tensor.l2_distance,
-            tensor.cosine_similarity,
-            tensor.max_delta,
-            if tensor.changed { "CHANGED" } else { "SAME" }
-        );
+        let cosine_color = if tensor.cosine_similarity > 0.9 { GREEN }
+            else if tensor.cosine_similarity > 0.5 { YELLOW }
+            else { RED };
 
-        let style = if is_selected {
-            Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD).bg(Color::Rgb(30, 30, 30))
-        } else {
-            Style::default().fg(TEXT_PRIMARY)
-        };
+        let status_text = if tensor.changed { "CHANGED" } else { "SAME" };
+        let status_color = if tensor.changed { RED } else { GREEN };
 
-        lines.push(Line::from(vec![Span::styled(row, style)]));
+
+        let bold_mod = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+
+        let spans = vec![
+            Span::styled(format!(" {:^1}", prefix), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD | bold_mod)),
+            Span::styled(format!("{:<24}", truncate_str(&tensor.name, 24)), Style::default().fg(TEXT_PRIMARY).add_modifier(bold_mod)),
+            Span::styled(format!("{:>12}", shape_display), Style::default().fg(TEXT_SECONDARY).add_modifier(bold_mod)),
+            Span::styled(format!("{:>10.4}", tensor.l2_distance), Style::default().fg(color).add_modifier(bold_mod)),
+            Span::styled(format!("{:>10.4}", tensor.cosine_similarity), Style::default().fg(cosine_color).add_modifier(bold_mod)),
+            Span::styled(format!("{:>12.6}", tensor.max_delta), Style::default().fg(color).add_modifier(bold_mod)),
+            Span::styled(format!("{:>8}", status_text), Style::default().fg(status_color).add_modifier(bold_mod)),
+        ];
+
+        lines.push(Line::from(spans));
+    }
+
+    // Distribution section
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("─".repeat(82), Style::default().fg(BORDER)),
+    ]));
+    
+    let low_count = layer.tensors.iter().filter(|t| t.l2_distance < 0.1).count();
+    let med_count = layer.tensors.iter().filter(|t| t.l2_distance >= 0.1 && t.l2_distance < 0.5).count();
+    let high_count = layer.tensors.iter().filter(|t| t.l2_distance >= 0.5).count();
+    let total = layer.tensors.len();
+
+    if total > 0 {
+        let low_bar = "█".repeat((low_count * 20 / total).max(1));
+        let med_bar = "█".repeat((med_count * 20 / total).max(1));
+        let high_bar = "█".repeat((high_count * 20 / total).max(1));
+
+        lines.push(Line::from(vec![
+            Span::styled("Distribution: ", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled(format!("Low({})", low_count), Style::default().fg(GREEN)),
+            Span::styled(low_bar, Style::default().fg(GREEN)),
+            Span::styled("  ", Style::default()),
+            Span::styled(format!("Med({})", med_count), Style::default().fg(YELLOW)),
+            Span::styled(med_bar, Style::default().fg(YELLOW)),
+            Span::styled("  ", Style::default()),
+            Span::styled(format!("High({})", high_count), Style::default().fg(RED)),
+            Span::styled(high_bar, Style::default().fg(RED)),
+        ]));
     }
 
     let paragraph = Paragraph::new(Text::from(lines))

@@ -4,76 +4,166 @@
 
 ## Demo
 
-ash
+```bash
+# With TUI scanner (interactive)
+$ neuraldiff diff
+
+# Direct comparison
 $ neuraldiff diff base.safetensors finetuned.safetensors
 
-NEURALDIFF v0.1.0    base.safetensors ? finetuned.safetensors    3.09B params
-
-+--------------+  +--------------+  +--------------+  +--------------+
-¦  3.09B       ¦  ¦     36       ¦  ¦     34       ¦  ¦      2       ¦
-¦  Parameters  ¦  ¦   Layers     ¦  ¦   Changed    ¦  ¦  Unchanged   ¦
-+--------------+  +--------------+  +--------------+  +--------------+
-
-Top Changed Layers:
-#1 layers.22.mlp    [¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦]  0.847 [CRIT]
-#2 layers.31.attn   [¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦]  0.723 [HIGH]
-#3 layers.18.mlp    [¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦]  0.691 [HIGH]
-#4 layers.05.attn   [¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦]  0.534 [MED]
-#5 layers.11.mlp    [¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦¦]  0.498 [MED]
-
-[R] Anomalies Detected
-  layers.22.mlp (z-score: 3.24)
-
-Press ? or Enter to explore individual layers
-
-## What it does
-
-You fine-tuned a model. Something changed. But **what** changed, and **how much**?
-
-NeuralDiff compares two .safetensors checkpoints and shows:
-- Which layers changed (L2 distance, cosine similarity)
-- How much each layer changed (colored bars by layer)
-- Anomaly detection: layers with unusually large shifts
-
-## Install
-
-ash
-cargo install neuraldiff
-
-# Or from source
-git clone https://github.com/yourname/neuraldiff
-cd neuraldiff
-cargo build --release
-
-## Usage
-
-ash
-# Basic diff (TUI)
-neuraldiff diff base.safetensors finetuned.safetensors
-
 # JSON export
-neuraldiff diff base.safetensors finetuned.safetensors --json > diff.json
+$ neuraldiff diff base.safetensors finetuned.safetensors --json > diff.json
+```
 
-# Inspect a single model
-neuraldiff inspect model.safetensors
+```
+NEURALDIFF v0.1.0    model_a.safetensors â†’ model_b.safetensors    111K params
+
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ Layer: layers.3.mlp  |  Type: MLP                               â”‚
+â”‚ L2: 0.365213  |  Params: 8.35K  |  Tensors: 4  |  Changed: 4/4  â”‚
+â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+â”‚   Tensor Name             Shape       L2     Cosine   Max Delta â”‚
+â”‚ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ â”‚
+â”‚ â–¶ transformer.h.3.mlp...  [32, 128]  0.6412   0.8924   0.033812 â”‚
+â”‚   transformer.h.3.mlp...  [128]      0.1215   0.0000   0.023842 â”‚
+â”‚   transformer.h.3.mlp...  [128, 32]  0.6377   0.8908   0.043178 â”‚
+â”‚   transformer.h.3.mlp...  [32]       0.0605   0.0000   0.026041 â”‚
+â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+â”‚ Distribution: Low(0)  Med(0)  High(4)                           â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+
+[â†‘â†“/jk] Navigate  [â†â†’/hl] Tensor  [Enter] Heatmap  [b] Back
+[s] Sort  [f] Filter  [J] JSON  [?] Help  [q] Quit
+```
 
 ## Features
 
-- **TUI Interface**: Dark-themed terminal UI with navigation, sorting, and filtering
-- **Layer Grouping**: Automatically groups tensors by logical layer (attention, MLP, norm, embedding, head)
-- **Anomaly Detection**: Highlights layers with unusually high delta using z-score analysis
-- **Parallel Processing**: Uses rayon for fast tensor-level diff computation
-- **Memory Efficient**: Memory-mapped file I/O for handling multi-GB models
-- **Offline First**: No network requests, everything stays local
+- **Auto Scanner** - Automatically finds `.safetensors` models on your system
+- **Model Selection UI** - Interactive TUI to pick Model A and Model B with `[A]`/`[B]` indicators
+- **Layer Comparison** - Side-by-side comparison with aligned columns (Name, Shape, L2, Cosine, Max Delta, Status)
+- **Color Coding** - Per-column colors: L2 by magnitude, Cosine by similarity, Status by change
+- **Anomaly Detection** - Highlights layers with unusually high delta using z-score analysis
+- **Distribution Bars** - Visual bars showing low/med/high change distribution per layer
+- **JSON Export** - Export full diff to JSON with `--json` flag or `[J]` key
+- **Parallel Processing** - Uses rayon for fast tensor-level diff computation
+- **Memory Efficient** - Memory-mapped file I/O for handling multi-GB models
+- **Offline First** - No network requests, everything stays local
+- **Weighted Metrics** - Layer L2 distance weighted by parameter count (not simple average)
 
-## Stack
+## Install
 
-- **Core**: Rust + safetensors crate
-- **TUI**: atatui + crossterm
-- **Math**: 
-darray + ayon
-- **Serialization**: serde + serde_json
+```bash
+cargo install neuraldiff
+
+# Or from source
+git clone https://github.com/Zertannax/neuraldiff
+cd neuraldiff
+cargo build --release
+```
+
+## Usage
+
+```bash
+# Interactive mode (scans for models)
+neuraldiff diff
+
+# Direct comparison
+neuraldiff diff base.safetensors finetuned.safetensors
+
+# JSON export
+neuraldiff diff base.safetensors finetuned.safetensors --json
+
+# Inspect a single model (placeholder)
+neuraldiff inspect model.safetensors
+```
+
+### Keyboard Shortcuts
+
+| Key     | Action                              |
+|---------|-------------------------------------|
+| `â†‘/k`   | Navigate up in layer list           |
+| `â†“/j`   | Navigate down in layer list         |
+| `â†/h`   | Previous tensor                     |
+| `â†’/l`   | Next tensor                         |
+| `Enter` | Toggle heatmap / Enter detail view  |
+| `b`     | Back to summary view                |
+| `s`     | Cycle sort mode (L2 â†’ Index â†’ Anom) |
+| `f`     | Toggle filter (All â†’ Changed only)  |
+| `J`     | Export JSON to diff.json            |
+| `?`     | Show help                           |
+| `q`     | Quit                                |
+
+## Metrics Explained
+
+- **L2 Distance** - Magnitude of changes (0 = identical, >1 = drastic)
+- **Cosine Similarity** - Direction similarity (-1 = opposite, 1 = identical)
+- **Max Delta** - Largest absolute change in any single parameter
+- **Z-Score** - How unusual the change is compared to other layers
+- **Anomaly** - Flagged when z-score > 2.0
+
+## Architecture
+
+```
+CLI args â†’ SafetensorsLoader â†’ DiffEngine â†’ LayerMapper â†’ TuiRenderer
+```
+
+- `loader.rs` - Parses .safetensors, extracts metadata + mmap
+- `diff.rs` - Computes L2, cosine, max delta per tensor (parallel)
+- `mapper.rs` - Groups tensors into logical layers (LLaMA/Qwen/GPT-2/Falcon)
+- `tui.rs` - Interactive terminal UI with legends and comparison view
+- `scanner.rs` - Auto-discovers models in home/downloads/.cache
+
+## Supported Models
+
+Naming conventions for automatic layer grouping:
+
+- **LLaMA/Qwen** - `model.layers.N.{self_attn,mlp,input_layernorm}`
+- **GPT-2** - `transformer.h.N.{attn,mlp,ln_1,ln_2}`
+- **Falcon** - `transformer.h.N.{self_attention,mlp,ln_attn,ln_mlp}`
+
+## Roadmap
+
+See [TODO.md](TODO.md) for the complete roadmap.
+
+### v0.1.1 (Current)
+- Heatmap visualization
+- Inspect command
+- Filter by layer type
+- Progress bar for large models
+
+### v0.2.0
+- Web 3D visualization (Three.js, no CDN)
+- Directory comparison
+- Configurable thresholds
+
+### v0.3.0
+- Streaming for models > 10GB
+- Cache system
+- Theme support
+
+## Development
+
+```bash
+# Build (TUI only)
+cargo build
+
+# Build with web feature
+cargo build --features web
+
+# Tests
+cargo test
+
+# Clippy
+cargo clippy --all-targets --all-features
+
+# Format check
+cargo fmt --check
+```
 
 ## License
 
 MIT
+
+## Contributors
+
+- NeuralDiff Contributors

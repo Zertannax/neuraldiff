@@ -119,6 +119,11 @@ fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
                 state.show_heatmap = !state.show_heatmap;
             }
         }
+        KeyCode::Char('b') => {
+            state.view_mode = ViewMode::Summary;
+            state.selected_layer = 0;
+            state.selected_tensor = 0;
+        }
         KeyCode::Char('s') => {
             state.sort_mode = match state.sort_mode {
                 SortMode::L2Desc => SortMode::LayerIndex,
@@ -649,6 +654,7 @@ fn draw_footer(f: &mut Frame, state: &AppState, area: Rect) {
         Span::styled("[↑↓/jk] Navigate  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[←→/hl] Tensor  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[Enter] Heatmap  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("[b] Back  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[s] Sort  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[f] Filter  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[J] JSON  ", Style::default().fg(TEXT_SECONDARY)),

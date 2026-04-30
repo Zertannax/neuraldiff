@@ -83,8 +83,8 @@ fn compute_tensor_diff(
     let cos_sim = cosine_similarity(&data_a, &data_b);
     let max_delta = delta
         .iter()
-        .cloned()
-        .fold(f32::NEG_INFINITY, f32::max);
+        .map(|d| d.abs())
+        .fold(0.0f32, f32::max);
     let mean_delta = delta.iter().sum::<f32>() / delta.len() as f32;
     let std_delta = std_dev(&delta);
 

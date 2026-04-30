@@ -41,7 +41,28 @@ pub fn compute_diff(model_a_path: &Path, model_b_path: &Path) -> Result<DiffResu
     let layers = crate::mapper::map_layers(&tensor_diffs);
 
     // Compute summary
-    let summary = compute_summary(&layers, total_params);
+    // Find missing tensors (only in A or only in B)
+    let missing_tensors = {
+        let names_a: std::collections::HashSet<String> = snapshot_a.tensors.keys().cloned().collect();
+        let names_b: std::collections::HashSet<String> = snapshot_b.tensors.keys().cloned().collect();
+        let mut missing = Vec::new();
+        for name in names_a.difference(&names_b) {
+            missing.push(format!("Only in A: {}", name));
+        }
+        for name in names_b.difference(&names_a) {
+            missing.push(format!("Only in B: {}", name));
+        }
+        missing
+    };
+    
+    if !missing_tensors.is_empty() {
+        eprintln!("Warning: {} tensors are not present in both models", missing_tensors.len());
+        for msg in &missing_tensors {
+            eprintln!("  {}", msg);
+        }
+    }
+    
+    let summary = compute_summary(&layers, total_params, missing_tensors);
 
     Ok(DiffResult {
         model_a: Some(model_a_path.to_string_lossy().to_string()),
@@ -109,9 +130,9 @@ fn std_dev(v: &[f32]) -> f32 {
     variance.sqrt()
 }
 
-fn compute_summary(layers: &[LayerDiff], _total_params: u64) -> DiffSummary {
+fn compute_summary(layers: &[LayerDiff], _total_params: u64, _missing_tensors: Vec<String>) -> DiffSummary {
     let total_layers = layers.len();
-    let changed_layers = layers.iter().filter(|l| l.aggregate_l2 > CHANGE_THRESHOLD).count();
+    let changed_layers = layers.iter().filter(|l| l.tensors.iter().any(|t| t.changed)).count();
     let unchanged_layers = total_layers - changed_layers;
     let change_ratio = if total_layers > 0 {
         (changed_layers as f32 / total_layers as f32) * 100.0
@@ -119,10 +140,15 @@ fn compute_summary(layers: &[LayerDiff], _total_params: u64) -> DiffSummary {
         0.0
     };
 
-    let mean_delta = if !layers.is_empty() {
-        layers.iter().map(|l| l.aggregate_l2).sum::<f32>() / layers.len() as f32
-    } else {
-        0.0
+    let mean_delta = {
+        let all_tensor_l2: Vec<f32> = layers.iter()
+            .flat_map(|l| l.tensors.iter().map(|t| t.l2_distance))
+            .collect();
+        if !all_tensor_l2.is_empty() {
+            all_tensor_l2.iter().sum::<f32>() / all_tensor_l2.len() as f32
+        } else {
+            0.0
+        }
     };
 
     let max_delta = layers

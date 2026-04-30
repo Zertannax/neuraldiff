@@ -17,10 +17,20 @@ pub fn map_layers(tensor_diffs: &[TensorDiff]) -> Vec<LayerDiff> {
         .map(|(key, diffs)| {
             let (layer_index, layer_type, layer_name) = parse_layer_key(&key);
             
-            let aggregate_l2 = if !diffs.is_empty() {
-                diffs.iter().map(|d| d.l2_distance).sum::<f32>() / diffs.len() as f32
-            } else {
-                0.0
+            let aggregate_l2 = {
+                let (weighted_sum, total_params) = diffs.iter()
+                    .map(|d| {
+                        let params = d.shape.iter().product::<usize>() as f32;
+                        (d.l2_distance * params, params)
+                    })
+                    .fold((0.0f32, 0.0f32), |(sum_l2, sum_p), (l2, p)| {
+                        (sum_l2 + l2, sum_p + p)
+                    });
+                if total_params > 0.0 {
+                    weighted_sum / total_params
+                } else {
+                    0.0
+                }
             };
             
             let param_count = diffs.iter().map(|d| {

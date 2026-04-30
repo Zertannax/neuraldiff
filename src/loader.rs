@@ -41,7 +41,7 @@ pub fn load(path: &Path) -> Result<ModelSnapshot> {
                 name: name.to_string(),
                 shape,
                 dtype,
-                data_offset: view.data().as_ptr() as u64 - mmap.as_ptr() as u64,
+                data_offset: view.data().as_ptr() as u64 - mmap.as_ptr() as u64, // offset in mmap
                 data_len: view.data().len() as u64,
             },
         );
@@ -130,7 +130,7 @@ pub fn load_tensor_data(snapshot: &ModelSnapshot, name: &str) -> Result<Vec<f32>
         }
         DType::I8 => {
             data.iter()
-                .map(|&b| b as i8 as f32)
+                .map(|&b| (b as i8) as f32)
                 .collect::<Vec<f32>>()
         }
         DType::U8 => {

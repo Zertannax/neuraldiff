@@ -1,6 +1,6 @@
 use crate::loader::{load, load_tensor_data};
 use crate::metrics::{cosine_similarity, l2_norm};
-use crate::types::{AnomalyInfo, DiffResult, DiffSummary, LayerDiff, Severity, TensorDiff};
+use crate::types::{AnomalyInfo, DiffResult, DiffSummary, LayerDiff, TensorDiff};
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::path::Path;
@@ -109,7 +109,7 @@ fn std_dev(v: &[f32]) -> f32 {
     variance.sqrt()
 }
 
-fn compute_summary(layers: &[LayerDiff], total_params: u64) -> DiffSummary {
+fn compute_summary(layers: &[LayerDiff], _total_params: u64) -> DiffSummary {
     let total_layers = layers.len();
     let changed_layers = layers.iter().filter(|l| l.aggregate_l2 > CHANGE_THRESHOLD).count();
     let unchanged_layers = total_layers - changed_layers;

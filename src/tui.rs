@@ -1,14 +1,13 @@
-use crate::types::{AppState, DiffResult, FilterMode, LayerDiff, Severity, SortMode, ViewMode};
+use crate::types::{AppState, FilterMode, LayerDiff, Severity, SortMode, ViewMode};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::symbols::border;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use ratatui::Terminal;
 use std::io;
@@ -102,12 +101,7 @@ fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             }
         }
         KeyCode::Char('h') | KeyCode::Left => {
-            if let Some(ref diff) = state.diff {
-                let layers = get_filtered_layers(state);
-                if let Some(layer) = layers.get(state.selected_layer) {
-                    state.selected_tensor = state.selected_tensor.saturating_sub(1);
-                }
-            }
+            state.selected_tensor = state.selected_tensor.saturating_sub(1);
         }
         KeyCode::Char('l') | KeyCode::Right => {
             if let Some(ref diff) = state.diff {
@@ -202,50 +196,81 @@ fn draw_ui(f: &mut Frame, state: &AppState) {
     }
 }
 
+// ============================================
+// SUMMARY VIEW - Intuitive overview
+// ============================================
 fn draw_summary(f: &mut Frame, state: &AppState, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3),  // Header
-            Constraint::Length(7),  // Metric cards
-            Constraint::Min(10),    // Top changed + anomalies
-            Constraint::Length(3),  // Footer
+            Constraint::Length(4),   // Header with model comparison
+            Constraint::Length(6),   // Legend + key metrics
+            Constraint::Min(12),     // Top changed layers
+            Constraint::Length(3),   // Footer
         ])
         .split(area);
 
-    draw_header(f, state, chunks[0]);
-    draw_metrics(f, state, chunks[1]);
+    draw_comparison_header(f, state, chunks[0]);
+    draw_legend_and_metrics(f, state, chunks[1]);
     draw_top_changed(f, state, chunks[2]);
     draw_footer(f, state, chunks[3]);
 }
 
-fn draw_header(f: &mut Frame, state: &AppState, area: Rect) {
-    let title = if let Some(ref diff) = state.diff {
-        format!(
-            " NEURALDIFF v0.1.0    {} -> {}    {} params",
-            diff.model_a.as_deref().unwrap_or("?"),
-            diff.model_b.as_deref().unwrap_or("?"),
-            format_params(diff.total_params)
-        )
-    } else {
-        " NEURALDIFF v0.1.0 ".to_string()
+fn draw_comparison_header(f: &mut Frame, state: &AppState, area: Rect) {
+    let diff = match state.diff {
+        Some(ref d) => d,
+        None => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(BORDER));
+            f.render_widget(block, area);
+            return;
+        }
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
+        .border_style(Style::default().fg(ACCENT))
         .style(Style::default().bg(SURFACE));
 
-    let paragraph = Paragraph::new(title)
-        .style(Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD))
-        .alignment(Alignment::Center)
+    let mut lines = vec![];
+
+    // Title
+    lines.push(Line::from(vec![
+        Span::styled(" MODEL COMPARISON ", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+    ]));
+
+    // Model A vs Model B
+    let model_a_name = diff.model_a.as_deref().unwrap_or("Model A");
+    let model_b_name = diff.model_b.as_deref().unwrap_or("Model B");
+
+    lines.push(Line::from(vec![
+        Span::styled("A: ", Style::default().fg(ACCENT)),
+        Span::styled(truncate_path(model_a_name, 30), Style::default().fg(TEXT_PRIMARY)),
+        Span::styled("  |  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("B: ", Style::default().fg(ACCENT_INFO)),
+        Span::styled(truncate_path(model_b_name, 30), Style::default().fg(TEXT_PRIMARY)),
+    ]));
+
+    // Params
+    lines.push(Line::from(vec![
+        Span::styled("Parameters: ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled(format_params(diff.total_params), Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+        Span::styled("  |  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("Layers: ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled(diff.summary.total_layers.to_string(), Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+    ]));
+
+    let paragraph = Paragraph::new(Text::from(lines))
+        .style(Style::default().fg(TEXT_PRIMARY))
+        .alignment(Alignment::Left)
         .block(block);
 
     f.render_widget(paragraph, area);
 }
 
-fn draw_metrics(f: &mut Frame, state: &AppState, area: Rect) {
+fn draw_legend_and_metrics(f: &mut Frame, state: &AppState, area: Rect) {
     let diff = match state.diff {
         Some(ref d) => d,
         None => return,
@@ -253,33 +278,78 @@ fn draw_metrics(f: &mut Frame, state: &AppState, area: Rect) {
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    draw_metric_card(f, "Parameters", &format_params(diff.total_params), chunks[0]);
-    draw_metric_card(f, "Layers", &diff.summary.total_layers.to_string(), chunks[1]);
-    draw_metric_card(f, "Changed", &diff.summary.changed_layers.to_string(), chunks[2]);
-    draw_metric_card(f, "Unchanged", &diff.summary.unchanged_layers.to_string(), chunks[3]);
-}
+    // Left: Legend explaining the UI
+    let legend_text = vec![
+        Line::from(vec![
+            Span::styled("LEGEND:", Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("L2 Distance ", Style::default().fg(TEXT_PRIMARY)),
+            Span::styled("- Magnitude of changes (0=identical, >1=drastic)", Style::default().fg(TEXT_SECONDARY)),
+        ]),
+        Line::from(vec![
+            Span::styled("Cosine Sim  ", Style::default().fg(TEXT_PRIMARY)),
+            Span::styled("- Direction similarity (-1=opposite, 1=identical)", Style::default().fg(TEXT_SECONDARY)),
+        ]),
+        Line::from(vec![
+            Span::styled("Z-Score     ", Style::default().fg(TEXT_PRIMARY)),
+            Span::styled("- How unusual the change is vs other layers", Style::default().fg(TEXT_SECONDARY)),
+        ]),
+    ];
 
-fn draw_metric_card(f: &mut Frame, label: &str, value: &str, area: Rect) {
-    let block = Block::default()
+    let legend_block = Block::default()
+        .title(" What These Numbers Mean ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(BORDER))
         .style(Style::default().bg(SURFACE));
 
-    let text = format!("{}\n{}", value, label);
-    let paragraph = Paragraph::new(text)
+    let legend = Paragraph::new(Text::from(legend_text))
         .style(Style::default().fg(TEXT_PRIMARY))
-        .alignment(Alignment::Center)
-        .block(block);
+        .block(legend_block);
 
-    f.render_widget(paragraph, area);
+    f.render_widget(legend, chunks[0]);
+
+    // Right: Color scale
+    let scale_text = vec![
+        Line::from(vec![
+            Span::styled("CHANGE SCALE:", Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("No change    ", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("[LOW]  ", Style::default().fg(GREEN)),
+            Span::styled("Minor (<0.3)", Style::default().fg(TEXT_SECONDARY)),
+        ]),
+        Line::from(vec![
+            Span::styled("Moderate     ", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("[MED]  ", Style::default().fg(YELLOW)),
+            Span::styled("Noticeable (0.3-0.6)", Style::default().fg(TEXT_SECONDARY)),
+        ]),
+        Line::from(vec![
+            Span::styled("Significant  ", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("[HIGH] ", Style::default().fg(ORANGE)),
+            Span::styled("Major (0.6-0.8)", Style::default().fg(TEXT_SECONDARY)),
+        ]),
+        Line::from(vec![
+            Span::styled("Drastic      ", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("[CRIT] ", Style::default().fg(RED)),
+            Span::styled("Critical (>0.8)", Style::default().fg(TEXT_SECONDARY)),
+        ]),
+    ];
+
+    let scale_block = Block::default()
+        .title(" Severity Levels ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER))
+        .style(Style::default().bg(SURFACE));
+
+    let scale = Paragraph::new(Text::from(scale_text))
+        .style(Style::default().fg(TEXT_PRIMARY))
+        .block(scale_block);
+
+    f.render_widget(scale, chunks[1]);
 }
 
 fn draw_top_changed(f: &mut Frame, state: &AppState, area: Rect) {
@@ -288,114 +358,144 @@ fn draw_top_changed(f: &mut Frame, state: &AppState, area: Rect) {
         None => return,
     };
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(area);
+    let block = Block::default()
+        .title(" Top Changed Layers (Press Enter to explore) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER))
+        .style(Style::default().bg(SURFACE));
 
-    let mut rows = vec![];
-    for (i, idx) in diff.summary.top_changed_indices.iter().enumerate() {
+    let mut lines = vec![];
+
+    // Header row
+    lines.push(Line::from(vec![
+        Span::styled("#  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("Layer Name          ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("Type  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("L2 Distance    ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("Severity", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("  ", Style::default()),
+        Span::styled("Change Bar", Style::default().fg(TEXT_SECONDARY)),
+    ]));
+    lines.push(Line::from(""));
+
+    for (i, idx) in diff.summary.top_changed_indices.iter().enumerate().take(10) {
         if let Some(layer) = diff.layers.get(*idx) {
-            let bar = render_l2_bar(layer.aggregate_l2, 30);
+            let bar = render_l2_bar(layer.aggregate_l2, 20);
             let severity = Severity::from_l2(layer.aggregate_l2);
             let color = l2_color(layer.aggregate_l2);
-            
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("#{} ", i + 1),
-                    Style::default().fg(TEXT_SECONDARY),
-                ),
-                Span::styled(
-                    format!("{:20} ", layer.layer_name),
-                    Style::default().fg(TEXT_PRIMARY),
-                ),
+
+            let row = Line::from(vec![
+                Span::styled(format!("{:>2} ", i + 1), Style::default().fg(TEXT_SECONDARY)),
+                Span::styled(format!("{:<18} ", layer.layer_name.clone()), Style::default().fg(TEXT_PRIMARY)),
+                Span::styled(format!("{:5} ", layer.layer_type.to_string()), Style::default().fg(TEXT_SECONDARY)),
+                Span::styled(format!("{:>8.4}  ", layer.aggregate_l2), Style::default().fg(color)),
+                Span::styled(severity.as_str(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled("  ", Style::default()),
                 Span::styled(bar, Style::default().fg(color)),
-                Span::styled(
-                    format!(" {:>6.3} ", layer.aggregate_l2),
-                    Style::default().fg(color),
-                ),
-                Span::styled(severity.as_str(), Style::default().fg(color)),
             ]);
-            rows.push(line);
+            lines.push(row);
         }
     }
 
-    let block = Block::default()
-        .title(" Top Changed Layers ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(SURFACE));
-
-    let paragraph = Paragraph::new(Text::from(rows))
-        .style(Style::default().fg(TEXT_PRIMARY))
-        .block(block);
-
-    f.render_widget(paragraph, chunks[0]);
-
-    let mut anomaly_lines = vec![];
     if diff.summary.anomalies.is_empty() {
-        anomaly_lines.push(Line::from("No anomalies detected"));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("No anomalies detected - all changes are within normal range", Style::default().fg(GREEN)),
+        ]));
     } else {
-        anomaly_lines.push(Line::from(vec![
-            Span::styled("[R] ", Style::default().fg(PINK)),
-            Span::styled("Anomalies Detected", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("⚠ ANOMALIES: ", Style::default().fg(PINK).add_modifier(Modifier::BOLD)),
         ]));
         for anomaly in &diff.summary.anomalies {
-            anomaly_lines.push(Line::from(format!(
-                "  {} (z-score: {:.2})",
-                anomaly.layer_name, anomaly.z_score
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("  • ", Style::default().fg(PINK)),
+                Span::styled(format!("{} ", anomaly.layer_name), Style::default().fg(TEXT_PRIMARY)),
+                Span::styled(format!("(z-score: {:.2}) - Unusually large change", anomaly.z_score), Style::default().fg(TEXT_SECONDARY)),
+            ]));
         }
     }
 
-    let block = Block::default()
-        .title(" Anomalies ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(SURFACE));
-
-    let paragraph = Paragraph::new(Text::from(anomaly_lines))
+    let paragraph = Paragraph::new(Text::from(lines))
         .style(Style::default().fg(TEXT_PRIMARY))
         .block(block);
 
-    f.render_widget(paragraph, chunks[1]);
+    f.render_widget(paragraph, area);
 }
 
+// ============================================
+// DETAIL VIEW - Layer by layer comparison
+// ============================================
 fn draw_detail(f: &mut Frame, state: &AppState, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3),  // Header
-            Constraint::Min(10),    // Main content
-            Constraint::Length(3),  // Footer
+            Constraint::Length(3),   // Header
+            Constraint::Min(10),     // Main content
+            Constraint::Length(3),   // Footer
         ])
         .split(area);
 
-    draw_header(f, state, chunks[0]);
+    draw_detail_header(f, state, chunks[0]);
     draw_detail_content(f, state, chunks[1]);
     draw_footer(f, state, chunks[2]);
+}
+
+fn draw_detail_header(f: &mut Frame, state: &AppState, area: Rect) {
+    let diff = match state.diff {
+        Some(ref d) => d,
+        None => {
+            let block = Block::default().borders(Borders::ALL);
+            f.render_widget(block, area);
+            return;
+        }
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(SURFACE));
+
+    let mut spans = vec![
+        Span::styled(" NEURALDIFF ", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+    ];
+
+    if let Some(ref a) = diff.model_a {
+        spans.push(Span::styled(truncate_path(a, 20), Style::default().fg(TEXT_SECONDARY)));
+    }
+    spans.push(Span::styled(" → ", Style::default().fg(ACCENT)));
+    if let Some(ref b) = diff.model_b {
+        spans.push(Span::styled(truncate_path(b, 20), Style::default().fg(TEXT_SECONDARY)));
+    }
+
+    let paragraph = Paragraph::new(Line::from(spans))
+        .alignment(Alignment::Center)
+        .block(block);
+
+    f.render_widget(paragraph, area);
 }
 
 fn draw_detail_content(f: &mut Frame, state: &AppState, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
         .split(area);
 
     draw_layer_list(f, state, chunks[0]);
-    draw_layer_detail(f, state, chunks[1]);
+    draw_tensor_comparison(f, state, chunks[1]);
 }
 
 fn draw_layer_list(f: &mut Frame, state: &AppState, area: Rect) {
     let layers = get_filtered_layers(state);
-    let mut rows = vec![];
+    let mut lines = vec![];
 
     for (i, layer) in layers.iter().enumerate() {
         let is_selected = i == state.selected_layer;
-        let bar = render_l2_bar(layer.aggregate_l2, 15);
+        let bar = render_l2_bar(layer.aggregate_l2, 12);
         let color = l2_color(layer.aggregate_l2);
-        
+        let severity = Severity::from_l2(layer.aggregate_l2);
+
         let style = if is_selected {
             Style::default().bg(ACCENT).fg(BG).add_modifier(Modifier::BOLD)
         } else {
@@ -403,12 +503,28 @@ fn draw_layer_list(f: &mut Frame, state: &AppState, area: Rect) {
         };
 
         let line = Line::from(vec![
-            Span::styled(format!("{:>3} ", layer.layer_index.map_or("-".to_string(), |i| i.to_string())), style),
-            Span::styled(format!("{:4} ", layer.layer_type.to_string()), style),
-            Span::styled(bar, if is_selected { Style::default().fg(BG) } else { Style::default().fg(color) }),
-            Span::styled(format!(" {:>5.3}", layer.aggregate_l2), style),
+            Span::styled(
+                format!("{:>3} ", layer.layer_index.map_or("-".to_string(), |i| i.to_string())),
+                style,
+            ),
+            Span::styled(
+                format!("{:4} ", layer.layer_type.to_string()),
+                style,
+            ),
+            Span::styled(
+                bar,
+                if is_selected { Style::default().fg(BG) } else { Style::default().fg(color) },
+            ),
+            Span::styled(
+                format!(" {:>5.3} ", layer.aggregate_l2),
+                style,
+            ),
+            Span::styled(
+                severity.as_str(),
+                if is_selected { Style::default().fg(BG) } else { Style::default().fg(color) },
+            ),
         ]);
-        rows.push(line);
+        lines.push(line);
     }
 
     let title = format!(" Layers [{}] ", match state.sort_mode {
@@ -423,20 +539,20 @@ fn draw_layer_list(f: &mut Frame, state: &AppState, area: Rect) {
         .border_style(Style::default().fg(BORDER))
         .style(Style::default().bg(SURFACE));
 
-    let paragraph = Paragraph::new(Text::from(rows))
+    let paragraph = Paragraph::new(Text::from(lines))
         .style(Style::default().fg(TEXT_PRIMARY))
         .block(block);
 
     f.render_widget(paragraph, area);
 }
 
-fn draw_layer_detail(f: &mut Frame, state: &AppState, area: Rect) {
+fn draw_tensor_comparison(f: &mut Frame, state: &AppState, area: Rect) {
     let layers = get_filtered_layers(state);
     let layer = match layers.get(state.selected_layer) {
         Some(l) => l,
         None => {
             let block = Block::default()
-                .title(" Detail ")
+                .title(" Tensor Comparison ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(BORDER));
             f.render_widget(block, area);
@@ -444,56 +560,82 @@ fn draw_layer_detail(f: &mut Frame, state: &AppState, area: Rect) {
         }
     };
 
+    let block = Block::default()
+        .title(" Tensor Comparison ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER))
+        .style(Style::default().bg(SURFACE));
+
     let mut lines = vec![];
+
+    // Layer info
     lines.push(Line::from(vec![
         Span::styled("Layer: ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled(&layer.layer_name, Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("Type:  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("  |  Type: ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled(layer.layer_type.to_string(), Style::default().fg(ACCENT_INFO)),
     ]));
-    lines.push(Line::from(vec![
-        Span::styled("L2:    ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled(format!("{:.6}", layer.aggregate_l2), Style::default().fg(l2_color(layer.aggregate_l2))),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("Params:", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled(format_params(layer.param_count), Style::default().fg(TEXT_PRIMARY)),
-    ]));
-    lines.push(Line::from(""));
 
     lines.push(Line::from(vec![
-        Span::styled("Tensors:", Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+        Span::styled("Aggregate L2: ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled(format!("{:.6}", layer.aggregate_l2), Style::default().fg(l2_color(layer.aggregate_l2))),
+        Span::styled("  |  Params: ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled(format_params(layer.param_count), Style::default().fg(TEXT_PRIMARY)),
+        Span::styled("  |  Tensors: ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled(layer.tensors.len().to_string(), Style::default().fg(TEXT_PRIMARY)),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Tensor comparison table header
+    lines.push(Line::from(vec![
+        Span::styled("Tensor Name              Shape          L2      Cosine  Max Delta  Changed", Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("─────────────────────────────────────────────────────────────────────────────", Style::default().fg(BORDER)),
     ]));
 
     for (i, tensor) in layer.tensors.iter().enumerate() {
         let is_selected = i == state.selected_tensor;
         let color = l2_color(tensor.l2_distance);
         let prefix = if is_selected { "> " } else { "  " };
-        
-        lines.push(Line::from(vec![
-            Span::styled(prefix, if is_selected { Style::default().fg(ACCENT) } else { Style::default() }),
+
+        let line = Line::from(vec![
             Span::styled(
-                format!("{:30} ", tensor.name),
-                if is_selected { Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD) } else { Style::default().fg(TEXT_PRIMARY) },
+                prefix,
+                if is_selected { Style::default().fg(ACCENT) } else { Style::default() },
+            ),
+            Span::styled(
+                format!("{:<22} ", truncate_str(&tensor.name, 22)),
+                if is_selected {
+                    Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TEXT_PRIMARY)
+                },
             ),
             Span::styled(
                 format!("{:?} ", tensor.shape),
                 Style::default().fg(TEXT_SECONDARY),
             ),
             Span::styled(
-                format!("L2={:.3}", tensor.l2_distance),
+                format!("{:7.4} ", tensor.l2_distance),
                 Style::default().fg(color),
             ),
-        ]));
+            Span::styled(
+                format!("{:7.4} ", tensor.cosine_similarity),
+                Style::default().fg(if tensor.cosine_similarity > 0.9 { GREEN } else if tensor.cosine_similarity > 0.5 { YELLOW } else { RED }),
+            ),
+            Span::styled(
+                format!("{:10.6} ", tensor.max_delta),
+                Style::default().fg(color),
+            ),
+            Span::styled(
+                if tensor.changed { "YES" } else { "NO" },
+                Style::default().fg(if tensor.changed { RED } else { GREEN }),
+            ),
+        ]);
+        lines.push(line);
     }
-
-    let block = Block::default()
-        .title(" Detail ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(SURFACE));
 
     let paragraph = Paragraph::new(Text::from(lines))
         .style(Style::default().fg(TEXT_PRIMARY))
@@ -504,13 +646,14 @@ fn draw_layer_detail(f: &mut Frame, state: &AppState, area: Rect) {
 
 fn draw_footer(f: &mut Frame, state: &AppState, area: Rect) {
     let mut spans = vec![
-        Span::styled("[↑↓/jk] navigate  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[Enter] select  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[s] sort  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[f] filter  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("[↑↓/jk] Navigate  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("[←→/hl] Tensor  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("[Enter] Heatmap  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("[s] Sort  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("[f] Filter  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[J] JSON  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[?] help  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[q] quit", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("[?] Help  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("[q] Quit", Style::default().fg(TEXT_SECONDARY)),
     ];
 
     if let Some(ref msg) = state.status_message {
@@ -523,7 +666,6 @@ fn draw_footer(f: &mut Frame, state: &AppState, area: Rect) {
         .style(Style::default().bg(SURFACE));
 
     let paragraph = Paragraph::new(Line::from(spans))
-        .style(Style::default().fg(TEXT_PRIMARY))
         .alignment(Alignment::Center)
         .block(block);
 
@@ -544,11 +686,17 @@ fn draw_help(f: &mut Frame, _state: &AppState, area: Rect) {
         Line::from("  Enter  Toggle heatmap / Enter detail view"),
         Line::from(""),
         Line::from("Commands:"),
-        Line::from("  s      Cycle sort mode (L2 -> Index -> Anomaly)"),
-        Line::from("  f      Toggle filter (All -> Changed only)"),
+        Line::from("  s      Cycle sort mode (L2 → Index → Anomaly)"),
+        Line::from("  f      Toggle filter (All → Changed only)"),
         Line::from("  J      Export JSON to diff.json"),
         Line::from("  ?      Toggle this help"),
         Line::from("  q      Quit"),
+        Line::from(""),
+        Line::from("Understanding the metrics:"),
+        Line::from("  L2 Distance  - How much the weights changed (0 = identical)"),
+        Line::from("  Cosine Sim   - Whether changes point in same direction (1 = same)"),
+        Line::from("  Max Delta    - Largest single weight change"),
+        Line::from("  Z-Score      - How unusual vs other layers (>2 = anomaly)"),
     ];
 
     let block = Block::default()
@@ -561,11 +709,14 @@ fn draw_help(f: &mut Frame, _state: &AppState, area: Rect) {
         .style(Style::default().fg(TEXT_PRIMARY))
         .block(block);
 
-    let area = centered_rect(60, 60, area);
+    let area = centered_rect(70, 80, area);
     f.render_widget(Clear, area);
     f.render_widget(paragraph, area);
 }
 
+// ============================================
+// Helpers
+// ============================================
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -616,5 +767,21 @@ fn format_params(n: u64) -> String {
         format!("{:.2}K", n as f64 / 1_000.0)
     } else {
         n.to_string()
+    }
+}
+
+fn truncate_path(path: &str, max_len: usize) -> String {
+    if path.len() <= max_len {
+        path.to_string()
+    } else {
+        format!("...{}", &path[path.len() - max_len + 3..])
+    }
+}
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
     }
 }

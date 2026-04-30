@@ -13,9 +13,11 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     Diff {
-        model_a: PathBuf,
-        model_b: PathBuf,
-        #[arg(long)]
+        #[arg(help = "First model path (optional if using scanner)")]
+        model_a: Option<PathBuf>,
+        #[arg(help = "Second model path (optional if using scanner)")]
+        model_b: Option<PathBuf>,
+        #[arg(long, help = "Output as JSON")]
         json: bool,
     },
     Inspect {

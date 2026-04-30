@@ -1,4 +1,5 @@
 pub mod types;
+pub mod scanner;
 
 #[cfg(feature = "tui")]
 pub mod tui;

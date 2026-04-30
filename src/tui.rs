@@ -592,54 +592,48 @@ fn draw_tensor_comparison(f: &mut Frame, state: &AppState, area: Rect) {
 
     lines.push(Line::from(""));
 
-    // Tensor comparison table header
+    // Table header with EXACT column widths
+    let header = format!(
+        "{:^2} {:<24} {:>12} {:>10} {:>10} {:>12} {:>8}",
+        "", "Tensor Name", "Shape", "L2", "Cosine", "Max Delta", "Status"
+    );
     lines.push(Line::from(vec![
-        Span::styled("Tensor Name              Shape          L2      Cosine  Max Delta  Changed", Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
+        Span::styled(header, Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("─────────────────────────────────────────────────────────────────────────────", Style::default().fg(BORDER)),
+        Span::styled("─".repeat(82), Style::default().fg(BORDER)),
     ]));
 
     for (i, tensor) in layer.tensors.iter().enumerate() {
         let is_selected = i == state.selected_tensor;
         let color = l2_color(tensor.l2_distance);
-        let prefix = if is_selected { "> " } else { "  " };
+        let prefix = if is_selected { "▶" } else { " " };
+        
+        let shape_str = format!("{:?}", tensor.shape);
+        let shape_display = if shape_str.len() > 12 {
+            format!("{}..]", &shape_str[..9])
+        } else {
+            shape_str
+        };
 
-        let line = Line::from(vec![
-            Span::styled(
-                prefix,
-                if is_selected { Style::default().fg(ACCENT) } else { Style::default() },
-            ),
-            Span::styled(
-                format!("{:<22} ", truncate_str(&tensor.name, 22)),
-                if is_selected {
-                    Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(TEXT_PRIMARY)
-                },
-            ),
-            Span::styled(
-                format!("{:?} ", tensor.shape),
-                Style::default().fg(TEXT_SECONDARY),
-            ),
-            Span::styled(
-                format!("{:7.4} ", tensor.l2_distance),
-                Style::default().fg(color),
-            ),
-            Span::styled(
-                format!("{:7.4} ", tensor.cosine_similarity),
-                Style::default().fg(if tensor.cosine_similarity > 0.9 { GREEN } else if tensor.cosine_similarity > 0.5 { YELLOW } else { RED }),
-            ),
-            Span::styled(
-                format!("{:10.6} ", tensor.max_delta),
-                Style::default().fg(color),
-            ),
-            Span::styled(
-                if tensor.changed { "YES" } else { "NO" },
-                Style::default().fg(if tensor.changed { RED } else { GREEN }),
-            ),
-        ]);
-        lines.push(line);
+        let row = format!(
+            " {:^1} {:<24} {:>12} {:>10.4} {:>10.4} {:>12.6} {:>8}",
+            prefix,
+            truncate_str(&tensor.name, 24),
+            shape_display,
+            tensor.l2_distance,
+            tensor.cosine_similarity,
+            tensor.max_delta,
+            if tensor.changed { "CHANGED" } else { "SAME" }
+        );
+
+        let style = if is_selected {
+            Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD).bg(Color::Rgb(30, 30, 30))
+        } else {
+            Style::default().fg(TEXT_PRIMARY)
+        };
+
+        lines.push(Line::from(vec![Span::styled(row, style)]));
     }
 
     let paragraph = Paragraph::new(Text::from(lines))

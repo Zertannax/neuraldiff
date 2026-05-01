@@ -1,180 +1,203 @@
-# NeuralDiff
+<div align="center">
 
-> Visual diff between AI model checkpoints. See what changed between your fine-tune runs.
+<img src="assets/hero.png" alt="neuraldiff hero" width="100%">
 
-## Demo
+# neuraldiff
 
-```bash
-# With TUI scanner (interactive)
-$ neuraldiff diff
+**Visual diff for AI model checkpoints. See exactly what your fine-tune changed.**
 
-# Direct comparison
-$ neuraldiff diff base.safetensors finetuned.safetensors
+[![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/built_with-Rust-orange.svg)](https://www.rust-lang.org/)
+[![Platform](https://img.shields.io/badge/platform-Linux_·_macOS_·_Windows_·_WSL-lightgrey.svg)]()
 
-# JSON export
-$ neuraldiff diff base.safetensors finetuned.safetensors --json > diff.json
-```
+</div>
 
-```
-NEURALDIFF v0.1.0    model_a.safetensors → model_b.safetensors    111K params
+---
 
-┌─────────────────────────────────────────────────────────────────┐
-│ Layer: layers.3.mlp  |  Type: MLP                               │
-│ L2: 0.365213  |  Params: 8.35K  |  Tensors: 4  |  Changed: 4/4  │
-├─────────────────────────────────────────────────────────────────┤
-│   Tensor Name             Shape       L2     Cosine   Max Delta │
-│ ─────────────────────────────────────────────────────────────── │
-│ ▶ transformer.h.3.mlp...  [32, 128]  0.6412   0.8924   0.033812 │
-│   transformer.h.3.mlp...  [128]      0.1215   0.0000   0.023842 │
-│   transformer.h.3.mlp...  [128, 32]  0.6377   0.8908   0.043178 │
-│   transformer.h.3.mlp...  [32]       0.0605   0.0000   0.026041 │
-├─────────────────────────────────────────────────────────────────┤
-│ Distribution: Low(0)  Med(0)  High(4)                           │
-└─────────────────────────────────────────────────────────────────┘
+## What it does
 
-[↑↓/jk] Navigate  [←→/hl] Tensor  [Enter] Heatmap  [b] Back
-[s] Sort  [f] Filter  [J] JSON  [?] Help  [q] Quit
-```
+`neuraldiff` compares two `.safetensors` model checkpoints and shows what changed — at the layer, tensor, and individual-weight level. Run one command, pick two models from a scan of your filesystem, get an interactive terminal UI with:
 
-## Features
+- **Per-layer L2 distance, cosine similarity, max delta** — weighted by parameter count
+- **Anomaly detection** with z-scores so unusually-shifted layers stand out
+- **Per-tensor heatmap** rendered as a smooth half-block gradient (red → yellow → green) directly in your terminal
+- **JSON / CSV export** for scripting and CI pipelines
 
-- **Auto Scanner** - Automatically finds `.safetensors` models on your system
-- **Model Selection UI** - Interactive TUI to pick Model A and Model B with `[A]`/`[B]` indicators
-- **Layer Comparison** - Side-by-side comparison with aligned columns (Name, Shape, L2, Cosine, Max Delta, Status)
-- **Color Coding** - Per-column colors: L2 by magnitude, Cosine by similarity, Status by change
-- **Anomaly Detection** - Highlights layers with unusually high delta using z-score analysis
-- **Distribution Bars** - Visual bars showing low/med/high change distribution per layer
-- **JSON Export** - Export full diff to JSON with `--json` flag or `[J]` key
-- **Parallel Processing** - Uses rayon for fast tensor-level diff computation
-- **Memory Efficient** - Memory-mapped file I/O for handling multi-GB models
-- **Offline First** - No network requests, everything stays local
-- **Weighted Metrics** - Layer L2 distance weighted by parameter count (not simple average)
+Useful for: inspecting fine-tunes vs. base models, comparing LoRA merges, debugging training divergence, sanity-checking quantization, or simply understanding what a checkpoint actually changed.
 
-## Install
+---
+
+## Quick start
 
 ```bash
-cargo install neuraldiff
-
-# Or from source
+# Build
 git clone https://github.com/Zertannax/neuraldiff
 cd neuraldiff
 cargo build --release
+
+# Launch — that's it
+./target/release/neuraldiff
 ```
 
-## Usage
+A scan of your filesystem starts immediately. Pick model A, pick model B, hit `Enter`, watch the diff render.
+
+If you already know the paths:
 
 ```bash
-# Interactive mode (scans for models)
-neuraldiff diff
-
-# Direct comparison
 neuraldiff diff base.safetensors finetuned.safetensors
-
-# JSON export
-neuraldiff diff base.safetensors finetuned.safetensors --json
-
-# Inspect a single model
-neuraldiff inspect model.safetensors
-
-# Scan and list all discovered models
-neuraldiff scan
 ```
 
-### Keyboard Shortcuts
+---
 
-| Key     | Action                              |
-|---------|-------------------------------------|
-| `↑/k`   | Navigate up in layer list           |
-| `↓/j`   | Navigate down in layer list         |
-| `←/h`   | Previous tensor                     |
-| `→/l`   | Next tensor                         |
-| `Enter` | Toggle heatmap / Enter detail view  |
-| `b`     | Back to summary view                |
-| `s`     | Cycle sort mode (L2 → Index → Anom) |
-| `f`     | Toggle filter (All → Changed only)  |
-| `J`     | Export JSON to diff.json            |
-| `?`     | Show help                           |
-| `q`     | Quit                                |
+## Demo — Qwen3-0.6B Base vs Instruct
 
-## Metrics Explained
+Comparing the base model with its instruct fine-tune. **596M parameters, 114 layers, diff in ~8 seconds** on a regular laptop CPU.
 
-- **L2 Distance** - Magnitude of changes (0 = identical, >1 = drastic)
-- **Cosine Similarity** - Direction similarity (-1 = opposite, 1 = identical)
-- **Max Delta** - Largest absolute change in any single parameter
-- **Z-Score** - How unusual the change is compared to other layers
-- **Anomaly** - Flagged when z-score > 2.0
+### 1. Loading screen
 
-## Architecture
+<img src="assets/01-loading.png" alt="loading screen" width="700">
+
+### 2. Summary view — headline numbers at a glance
+
+The summary tells you immediately that 93.9% of layers changed and that `embed_tokens` is the biggest anomaly (z-score 8.09) — the instruct fine-tune massively reshaped the embeddings.
+
+<img src="assets/02-summary.png" alt="summary view" width="900">
+
+### 3. Detail view — drill into a layer
+
+<img src="assets/03-detail.png" alt="detail view" width="700">
+
+### 4. Heatmap — see which weights changed
+
+A smooth red-yellow-green gradient over the actual delta values. Half-block rendering doubles the vertical resolution within the terminal.
+
+<img src="assets/04-heatmap.png" alt="heatmap of mlp.down_proj" width="700">
+
+Layernorm tensors often show interesting structured patterns:
+
+<img src="assets/05-heatmap-norm.png" alt="heatmap of post_attention_layernorm" width="500">
+
+### 5. Help
+
+<img src="assets/06-help.png" alt="help screen" width="700">
+
+---
+
+## CLI reference
+
+```bash
+neuraldiff                              # unified TUI: scan → pick → diff
+neuraldiff diff <A> <B>                 # diff two models in TUI
+neuraldiff diff <A> <B> --json          # JSON to stdout
+neuraldiff diff <A> <B> --output diff.csv   # write to file (.json or .csv)
+
+neuraldiff summary <A> <B>              # one-screen text summary, no TUI
+neuraldiff summary <A> <B> -n 20        # show top 20 changed layers
+
+neuraldiff inspect <model>              # list all tensors of a single model
+neuraldiff inspect <model> --top 20     # top 20 tensors by parameter count
+neuraldiff inspect <model> --json       # machine-readable
+
+neuraldiff scan                         # find .safetensors models on disk
+neuraldiff scan --root /path/to/dir     # scan a specific directory
+neuraldiff scan --json                  # machine-readable
+```
+
+Aliases: `d` = `diff`, `i` = `inspect`, `s` = `scan`.
+
+### Keyboard shortcuts (TUI)
+
+| Key | Action |
+|-----|--------|
+| `↑↓` `j/k` | Navigate the layer list |
+| `←→` `h/l` | Previous / next tensor |
+| `Enter` | Enter detail view → show heatmap for selected tensor |
+| `b` | Back (heatmap → detail → summary) |
+| `s` | Cycle sort (L2↓ → Index → Anomaly) |
+| `f` | Toggle filter (All ↔ Changed only) |
+| `t` | Cycle layer-type filter (All → Attn → MLP → Norm → Embed → Head → Other) |
+| `J` | Export full diff to `diff.json` |
+| `C` | Export tensor-level diff to `diff.csv` |
+| `?` | Show / hide help |
+| `q` | Quit |
+
+---
+
+## Supported architectures
+
+Layer grouping is done via per-architecture regex patterns. Currently:
+
+| Architecture | Naming pattern |
+|--------------|----------------|
+| **LLaMA / Qwen / Mistral** | `model.layers.N.{self_attn,mlp,input_layernorm,post_attention_layernorm}` |
+| **GPT-2** | `transformer.h.N.{attn,mlp,ln_1,ln_2}` |
+| **Falcon** | `transformer.h.N.{self_attention,mlp,ln_attn,ln_mlp,input_layernorm}` |
+
+Tensors that don't match any of these fall into a generic `Other` bucket grouped by path prefix.
+
+### Supported dtypes
+
+`F32` · `F16` · `BF16` · `I64` / `I32` / `I16` / `I8` · `U8` · `Bool`. All decoded to `f32` internally for diff math.
+
+---
+
+## Performance
+
+| Model size | Load time | Diff time |
+|-----------|-----------|-----------|
+| 600M (BF16) | ~1s | ~7s |
+| 3B | ~8s | ~12s |
+| 7B | ~20s | ~30s |
+| 13B | ~40s | ~60s |
+
+Reference numbers on consumer hardware. Uses `memmap2` for zero-copy I/O and `rayon` for parallel tensor diffing.
+
+---
+
+## How it works
 
 ```
-CLI args → SafetensorsLoader → DiffEngine → LayerMapper → TuiRenderer
+CLI args → SafetensorsLoader → DiffEngine → LayerMapper → TUI
+              (Arc<Mmap>)       (rayon)    (typed enum)   (ratatui)
 ```
 
-- `loader.rs` - Parses .safetensors, extracts metadata + mmap
-- `diff.rs` - Computes L2, cosine, max delta per tensor (parallel)
-- `mapper.rs` - Groups tensors into logical layers (LLaMA/Qwen/GPT-2/Falcon)
-- `tui.rs` - Interactive terminal UI with legends and comparison view
-- `scanner.rs` - Auto-discovers models in home/downloads/.cache
+- `loader.rs` — parses safetensors, memory-maps, exposes `load_tensor_data` by offset
+- `diff.rs` — computes L2 / cosine / max-delta per tensor in parallel
+- `mapper.rs` — typed `LayerComponent` enum groups tensors into logical layers
+- `metrics.rs` — `l2_norm`, `cosine_similarity`
+- `scanner.rs` — recursive `.safetensors` discovery (WSL-aware on Linux)
+- `tui.rs` — interactive terminal UI with heatmap, summary, detail, help
+- `terminal.rs` — RAII `TerminalGuard` so the terminal is always restored
 
-## Supported Models
-
-Naming conventions for automatic layer grouping:
-
-- **LLaMA/Qwen** - `model.layers.N.{self_attn,mlp,input_layernorm}`
-- **GPT-2** - `transformer.h.N.{attn,mlp,ln_1,ln_2}`
-- **Falcon** - `transformer.h.N.{self_attention,mlp,ln_attn,ln_mlp}`
-
-## Roadmap
-
-See [TODO.md](TODO.md) for the complete roadmap.
-
-### v0.1.1 (Current)
-- Heatmap visualization
-- Inspect command
-- Filter by layer type
-- Progress bar for large models
-
-### v0.2.0
-- Web 3D visualization (Three.js, no CDN)
-- Directory comparison
-- Configurable thresholds
-
-### v0.3.0
-- Streaming for models > 10GB
-- Cache system
-- Theme support
+---
 
 ## Development
 
 ```bash
-# Build (TUI only)
-cargo build
-
-# Build with web feature
-cargo build --features web
-
-# Tests
-cargo test
-
-# Clippy
+cargo build                    # debug
+cargo build --release          # release
+cargo test --all-features      # 33 tests
 cargo clippy --all-targets --all-features
-
-# Format check
 cargo fmt --check
 ```
 
-### Windows Build Note
+---
 
-On Windows, debug builds may fail with PDB/linker errors due to disk space. Use sequential compilation:
-```bash
-cargo test --jobs 1
-cargo build --release --jobs 1
-```
+## Roadmap
+
+See [TODO.md](TODO.md) for the full plan.
+
+- **v0.2.0** (in progress) — multi-shard models (Llama 70B, Gemma 31B), NaN/Inf handling, CI, binary releases
+- **v0.3.0** — per-dtype tests, F64 accumulators, scrolling layer lists, scoped anomaly detection
+- **v1.0.0** — Web 3D viz, GGUF support, LoRA diff mode, streaming for >10GB models
+
+---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
 
-## Contributors
-
-- NeuralDiff Contributors
+<div align="center">
+  <br>
+  <img src="assets/divider.png" alt="" width="400">
+</div>

@@ -2,10 +2,17 @@
 name = "neuraldiff"
 version = "0.2.0"
 edition = "2024"
+rust-version = "1.88"
 authors = ["NeuralDiff Contributors"]
-description = "Visual diff between AI model checkpoints"
+description = "Visual diff for AI model checkpoints — terminal UI, layer-level metrics, heatmaps, JSON/CSV export."
 license = "MIT"
-repository = "https://github.com/remic/neuraldiff"
+readme = "README.md"
+repository = "https://github.com/Zertannax/neuraldiff"
+homepage = "https://github.com/Zertannax/neuraldiff"
+documentation = "https://github.com/Zertannax/neuraldiff#readme"
+keywords = ["ai", "safetensors", "diff", "tui", "machine-learning"]
+categories = ["command-line-utilities", "visualization", "development-tools"]
+exclude = ["assets/", "tests/fixtures/", "models/", "docs/", ".github/", "*.png", "TODO.md"]
 
 [features]
 default = ["tui"]

@@ -181,6 +181,9 @@ pub struct HeatmapData {
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub diff: Option<DiffResult>,
+    /// Cached model snapshots from the diff load — reused by heatmap
+    /// rendering to avoid re-mmapping multi-GB checkpoints on every Enter.
+    pub snapshots: Option<(Arc<ModelSnapshot>, Arc<ModelSnapshot>)>,
     pub selected_layer: usize,
     pub selected_tensor: usize,
     pub show_heatmap: bool,
@@ -238,6 +241,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             diff: None,
+            snapshots: None,
             selected_layer: 0,
             selected_tensor: 0,
             show_heatmap: false,

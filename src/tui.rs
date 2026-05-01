@@ -87,8 +87,13 @@ pub fn run_with_loading(path_a: &Path, path_b: &Path) -> Result<()> {
     };
 
     let diff = diff_result?;
+    // Pre-load snapshots once and stash them on AppState. compute_heatmap()
+    // reuses these instead of re-mmapping multi-GB files on every Enter.
+    let snap_a = std::sync::Arc::new(crate::loader::load(path_a)?);
+    let snap_b = std::sync::Arc::new(crate::loader::load(path_b)?);
     let mut state = AppState::default();
     state.diff = Some(diff);
+    state.snapshots = Some((snap_a, snap_b));
 
     run_main_loop(&mut terminal, &mut state)
 }
@@ -260,20 +265,17 @@ fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
 // ============================================
 
 fn compute_heatmap(state: &AppState) -> Option<HeatmapData> {
-    let diff = state.diff.as_ref()?;
+    let _ = state.diff.as_ref()?;
     let layers = get_filtered_layers(state);
     let layer = layers.get(state.selected_layer)?;
     let tensor = layer.tensors.get(state.selected_tensor)?;
 
     let tensor_name = tensor.name.clone();
     let shape = tensor.shape.clone();
-    let path_a = diff.model_a.clone();
-    let path_b = diff.model_b.clone();
 
-    let snap_a = crate::loader::load(Path::new(&path_a)).ok()?;
-    let snap_b = crate::loader::load(Path::new(&path_b)).ok()?;
-    let data_a = crate::loader::load_tensor_data(&snap_a, &tensor_name).ok()?;
-    let data_b = crate::loader::load_tensor_data(&snap_b, &tensor_name).ok()?;
+    let (snap_a, snap_b) = state.snapshots.as_ref()?;
+    let data_a = crate::loader::load_tensor_data(snap_a, &tensor_name).ok()?;
+    let data_b = crate::loader::load_tensor_data(snap_b, &tensor_name).ok()?;
 
     let deltas: Vec<f32> = data_a.iter().zip(data_b.iter()).map(|(a, b)| (b - a).abs()).collect();
 

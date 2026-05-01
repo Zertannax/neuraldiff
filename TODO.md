@@ -8,15 +8,15 @@
 
 ### TUI - Fonctionnalites Manquantes
 
-- [ ] **Heatmap** - Touche `Enter` en mode Detail toggle `show_heatmap` mais aucune fonction `draw_heatmap` n'existe. Afficher une matrice visuelle des deltas du tenseur selectionne avec blocs unicode.
-- [ ] **Inspect** - Commande `neuraldiff inspect model.safetensors` est un stub. Afficher metadonnees : noms, shapes, dtypes, taille totale, nombre de parametres.
+- [x] **Heatmap** - draw_heatmap: grille downsampleée avec palette ░▒▓█ et couleurs GREEN→RED, chargement à la demande
+- [x] **Inspect** - Affiche nom, shape, dtype, param count de tous les tenseurs
 - [ ] **Filtre par type** - Ajouter filtre pour n'afficher que les couches de type specifique (attn/mlp/norm/embed)
-- [ ] **Barre de progression** - Afficher une barre pendant le chargement des gros modeles (utiliser ProgressState)
+- [x] **Barre de progression** - Loading screen animé (spinner braille + elapsed) via run_with_loading
 - [ ] **Export CSV** - Ajouter touche `[C]` pour exporter en CSV en plus du JSON
 
 ### Corrections
 
-- [ ] **Warnings** - Nettoyer : `unused variable: diff` (tui.rs:107, 279), `unused imports: Cell, Row, Table` (tui.rs:10)
+- [x] **Warnings** - Supprimés : imports Cell/Row/Table retirés, variable diff inutilisée corrigée
 - [ ] **Tests integration** - Tester end-to-end avec les fixtures LLaMA (tiny_model_a/b)
 - [ ] **Scan recursif** - Le scanner ne scanne qu'un niveau de profondeur, faire recursif
 

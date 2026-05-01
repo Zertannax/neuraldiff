@@ -169,11 +169,22 @@ impl ProgressState {
 }
 
 #[derive(Debug, Clone)]
+pub struct HeatmapData {
+    pub grid: Vec<f32>,
+    pub rows: usize,
+    pub cols: usize,
+    pub min: f32,
+    pub max: f32,
+    pub tensor_name: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct AppState {
     pub diff: Option<DiffResult>,
     pub selected_layer: usize,
     pub selected_tensor: usize,
     pub show_heatmap: bool,
+    pub heatmap_data: Option<HeatmapData>,
     pub sort_mode: SortMode,
     pub filter_mode: FilterMode,
     pub show_help: bool,
@@ -198,6 +209,7 @@ impl Default for AppState {
             selected_layer: 0,
             selected_tensor: 0,
             show_heatmap: false,
+            heatmap_data: None,
             sort_mode: SortMode::L2Desc,
             filter_mode: FilterMode::All,
             show_help: false,

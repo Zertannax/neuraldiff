@@ -14,21 +14,27 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-// Theme
-const BG: Color = Color::Rgb(10, 10, 10);
-const SURFACE: Color = Color::Rgb(23, 23, 23);
-const TEXT_PRIMARY: Color = Color::Rgb(229, 229, 229);
-const TEXT_SECONDARY: Color = Color::Rgb(115, 115, 115);
-const ACCENT: Color = Color::Rgb(16, 185, 129);
-const ACCENT_INFO: Color = Color::Rgb(249, 115, 22);
+// Theme — refined for higher contrast & cleaner accents
+const BG: Color = Color::Rgb(13, 14, 17);
+const SURFACE: Color = Color::Rgb(22, 24, 28);
+const TEXT_PRIMARY: Color = Color::Rgb(232, 232, 232);
+const TEXT_SECONDARY: Color = Color::Rgb(140, 140, 145);
+const TEXT_DIM: Color = Color::Rgb(90, 90, 95);
+const ACCENT: Color = Color::Rgb(16, 185, 129);          // mint — primary brand
+const MODEL_A: Color = Color::Rgb(56, 189, 248);          // cyan — Model A
+const MODEL_B: Color = Color::Rgb(244, 114, 182);         // pink — Model B
 const GREEN: Color = Color::Rgb(34, 197, 94);
 const YELLOW: Color = Color::Rgb(234, 179, 8);
 const ORANGE: Color = Color::Rgb(249, 115, 22);
 const RED: Color = Color::Rgb(239, 68, 68);
 const PINK: Color = Color::Rgb(236, 72, 153);
-const BORDER: Color = Color::Rgb(38, 38, 38);
+const BORDER: Color = Color::Rgb(48, 50, 56);
+// Backwards-compat alias used in older draw fns; same as MODEL_B.
+const ACCENT_INFO: Color = Color::Rgb(249, 115, 22);
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+const LOGO: &str = "NEURALDIFF";
 
 // ============================================
 // Public entry points
@@ -429,24 +435,28 @@ fn draw_loading(f: &mut Frame, path_a: &str, path_b: &str, spinner: &str, elapse
     let lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled(format!("  {}  ", spinner), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-            Span::styled("NEURALDIFF", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
-            Span::styled("  Computing diff...", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled(format!("    ◆ {}", LOGO), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  v{}", env!("CARGO_PKG_VERSION")), Style::default().fg(TEXT_DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("    {} ", spinner), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled("Computing diff…", Style::default().fg(TEXT_PRIMARY)),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  A → ", Style::default().fg(ACCENT)),
-            Span::styled(truncate_path(path_a, 50), Style::default().fg(TEXT_PRIMARY)),
+            Span::styled("    ◐ A  ", Style::default().fg(MODEL_A).add_modifier(Modifier::BOLD)),
+            Span::styled(truncate_path(path_a, 48), Style::default().fg(TEXT_PRIMARY)),
         ]),
         Line::from(vec![
-            Span::styled("  B → ", Style::default().fg(ACCENT_INFO)),
-            Span::styled(truncate_path(path_b, 50), Style::default().fg(TEXT_PRIMARY)),
+            Span::styled("    ◑ B  ", Style::default().fg(MODEL_B).add_modifier(Modifier::BOLD)),
+            Span::styled(truncate_path(path_b, 48), Style::default().fg(TEXT_PRIMARY)),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled(format!("  Elapsed: {:.1}s", elapsed), Style::default().fg(TEXT_SECONDARY)),
-            Span::styled("                    ", Style::default()),
-            Span::styled("[q] Cancel", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled(format!("    ⏱  {:.1}s", elapsed), Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("                ", Style::default()),
+            Span::styled(" q ", Style::default().fg(BG).bg(TEXT_DIM).add_modifier(Modifier::BOLD)),
+            Span::styled(" Cancel", Style::default().fg(TEXT_SECONDARY)),
         ]),
         Line::from(""),
     ];
@@ -475,7 +485,7 @@ fn draw_summary(f: &mut Frame, state: &AppState, area: Rect) {
             Constraint::Length(4),
             Constraint::Length(6),
             Constraint::Min(12),
-            Constraint::Length(3),
+            Constraint::Length(4),
         ])
         .split(area);
 
@@ -494,27 +504,34 @@ fn draw_comparison_header(f: &mut Frame, state: &AppState, area: Rect) {
         }
     };
 
+    let version = env!("CARGO_PKG_VERSION");
+    let change_color = if diff.summary.changed_layers > 0 { ORANGE } else { GREEN };
+
     let lines = vec![
-        Line::from(vec![Span::styled(
-            " MODEL COMPARISON ",
-            Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD),
-        )]),
         Line::from(vec![
-            Span::styled("A: ", Style::default().fg(ACCENT)),
-            Span::styled(truncate_path(&diff.model_a, 40), Style::default().fg(TEXT_PRIMARY)),
-            Span::styled("  |  ", Style::default().fg(TEXT_SECONDARY)),
-            Span::styled("B: ", Style::default().fg(ACCENT_INFO)),
-            Span::styled(truncate_path(&diff.model_b, 40), Style::default().fg(TEXT_PRIMARY)),
+            Span::styled(format!(" ◆ {} ", LOGO), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("v{}", version), Style::default().fg(TEXT_DIM)),
+            Span::styled("    ", Style::default()),
+            Span::styled("◐ A ", Style::default().fg(MODEL_A).add_modifier(Modifier::BOLD)),
+            Span::styled(truncate_path(&diff.model_a, 36), Style::default().fg(TEXT_PRIMARY)),
+            Span::styled("  →  ", Style::default().fg(TEXT_DIM)),
+            Span::styled("◑ B ", Style::default().fg(MODEL_B).add_modifier(Modifier::BOLD)),
+            Span::styled(truncate_path(&diff.model_b, 36), Style::default().fg(TEXT_PRIMARY)),
         ]),
         Line::from(vec![
-            Span::styled("Parameters: ", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("  Σ Params  ", Style::default().fg(TEXT_DIM)),
             Span::styled(format_params(diff.total_params), Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
-            Span::styled("  |  Layers: ", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("    ▣ Layers  ", Style::default().fg(TEXT_DIM)),
             Span::styled(diff.summary.total_layers.to_string(), Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
-            Span::styled("  |  Changed: ", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("    ⚡ Changed  ", Style::default().fg(TEXT_DIM)),
             Span::styled(
-                format!("{}  ({:.1}%)", diff.summary.changed_layers, diff.summary.change_ratio_percent),
-                Style::default().fg(if diff.summary.changed_layers > 0 { ORANGE } else { GREEN }).add_modifier(Modifier::BOLD),
+                format!("{} / {}  ({:.1}%)", diff.summary.changed_layers, diff.summary.total_layers, diff.summary.change_ratio_percent),
+                Style::default().fg(change_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("    ⚠ Anomalies  ", Style::default().fg(TEXT_DIM)),
+            Span::styled(
+                diff.summary.anomalies.len().to_string(),
+                Style::default().fg(if diff.summary.anomalies.is_empty() { GREEN } else { PINK }).add_modifier(Modifier::BOLD),
             ),
         ]),
     ];
@@ -646,7 +663,7 @@ fn draw_detail(f: &mut Frame, state: &AppState, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints([Constraint::Length(3), Constraint::Min(10), Constraint::Length(3)])
+        .constraints([Constraint::Length(3), Constraint::Min(10), Constraint::Length(4)])
         .split(area);
 
     draw_detail_header(f, state, chunks[0]);
@@ -669,12 +686,14 @@ fn draw_detail_header(f: &mut Frame, state: &AppState, area: Rect) {
         }
     };
 
-    let mut spans = vec![
-        Span::styled(" NEURALDIFF ", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+    let spans = vec![
+        Span::styled(format!(" ◆ {} ", LOGO), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled("◐ A ", Style::default().fg(MODEL_A).add_modifier(Modifier::BOLD)),
+        Span::styled(truncate_path(&diff.model_a, 24), Style::default().fg(TEXT_PRIMARY)),
+        Span::styled("  →  ", Style::default().fg(TEXT_DIM)),
+        Span::styled("◑ B ", Style::default().fg(MODEL_B).add_modifier(Modifier::BOLD)),
+        Span::styled(truncate_path(&diff.model_b, 24), Style::default().fg(TEXT_PRIMARY)),
     ];
-    spans.push(Span::styled(truncate_path(&diff.model_a, 20), Style::default().fg(TEXT_SECONDARY)));
-    spans.push(Span::styled(" → ", Style::default().fg(ACCENT)));
-    spans.push(Span::styled(truncate_path(&diff.model_b, 20), Style::default().fg(TEXT_SECONDARY)));
 
     f.render_widget(
         Paragraph::new(Line::from(spans))
@@ -881,13 +900,20 @@ fn draw_heatmap(f: &mut Frame, state: &AppState, area: Rect) {
     ]));
     lines.push(Line::from(""));
 
-    // Color scale legend
+    // Color scale legend — 5 distinct glyphs so the bands are visible
+    // even on monochrome / colorblind / piped screenshots.
     lines.push(Line::from(vec![
-        Span::styled("Scale: ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("░ low ", Style::default().fg(GREEN)),
-        Span::styled("▒ med ", Style::default().fg(YELLOW)),
-        Span::styled("▓ high ", Style::default().fg(ORANGE)),
-        Span::styled("█ max", Style::default().fg(RED)),
+        Span::styled("Scale  ", Style::default().fg(TEXT_DIM)),
+        Span::styled("· ", Style::default().fg(GREEN)),
+        Span::styled("none  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("░ ", Style::default().fg(GREEN)),
+        Span::styled("low  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("▒ ", Style::default().fg(YELLOW)),
+        Span::styled("med  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("▓ ", Style::default().fg(ORANGE)),
+        Span::styled("high  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("█ ", Style::default().fg(RED)),
+        Span::styled("max", Style::default().fg(TEXT_SECONDARY)),
     ]));
     lines.push(Line::from(""));
 
@@ -911,10 +937,10 @@ fn draw_heatmap(f: &mut Frame, state: &AppState, area: Rect) {
 
 fn heatmap_cell(norm: f32) -> (&'static str, Color) {
     match norm {
-        n if n < 0.15 => ("░", GREEN),
-        n if n < 0.35 => ("░", YELLOW),
+        n if n < 0.10 => ("·", GREEN),   // very low — distinct dot, not a block
+        n if n < 0.30 => ("░", GREEN),
         n if n < 0.55 => ("▒", YELLOW),
-        n if n < 0.75 => ("▓", ORANGE),
+        n if n < 0.80 => ("▓", ORANGE),
         _ => ("█", RED),
     }
 }
@@ -925,37 +951,71 @@ fn heatmap_cell(norm: f32) -> (&'static str, Color) {
 
 fn draw_footer(f: &mut Frame, state: &AppState, area: Rect) {
     let heatmap_hint = if state.view_mode == ViewMode::Detail && state.show_heatmap {
-        "[Enter/b] Exit heatmap  "
+        "Enter/b Exit heatmap"
     } else if state.view_mode == ViewMode::Detail {
-        "[Enter] Heatmap  "
+        "Enter Heatmap"
     } else {
-        "[Enter] Explore  "
+        "Enter Explore"
     };
 
-    let type_label = format!("[t] Type:{:<5}  ", state.layer_type_filter.label());
-    let mut spans = vec![
-        Span::styled("[↑↓/jk] Navigate  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[←→/hl] Tensor  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled(heatmap_hint, Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[b] Back  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[s] Sort  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[f] Changed  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled(type_label, Style::default().fg(
-            if state.layer_type_filter == LayerTypeFilter::All { TEXT_SECONDARY } else { ACCENT }
-        )),
-        Span::styled("[J] JSON  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[C] CSV  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[?] Help  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[q] Quit", Style::default().fg(TEXT_SECONDARY)),
-    ];
+    let sep = || Span::styled("  ·  ", Style::default().fg(TEXT_DIM));
 
+    fn binding(k: &str, label: &str) -> Vec<Span<'static>> {
+        vec![
+            Span::styled(format!(" {} ", k), Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {}", label), Style::default().fg(TEXT_PRIMARY)),
+        ]
+    }
+
+    let type_filter_active = state.layer_type_filter != LayerTypeFilter::All;
+    let filter_active = state.filter_mode == FilterMode::ChangedOnly;
+
+    // Row 1 — primary keybindings, color-coded by category
+    let mut row1 = vec![];
+    row1.extend(binding("↑↓", "Layer"));
+    row1.push(sep());
+    row1.extend(binding("←→", "Tensor"));
+    row1.push(sep());
+    row1.extend(binding("Enter", heatmap_hint.trim_start_matches("Enter ")));
+    row1.push(sep());
+    row1.extend(binding("b", "Back"));
+    row1.push(sep());
+    row1.extend(binding("?", "Help"));
+    row1.push(sep());
+    row1.extend(binding("q", "Quit"));
+
+    // Row 2 — view-state keys, with active filters highlighted
+    let mut row2 = vec![];
+    row2.extend(binding("s", match state.sort_mode {
+        SortMode::L2Desc => "Sort: L2↓",
+        SortMode::LayerIndex => "Sort: Index",
+        SortMode::AnomalyScore => "Sort: Anom",
+    }));
+    row2.push(sep());
+    row2.push(Span::styled(" f ", Style::default().fg(BG).bg(if filter_active { ACCENT } else { TEXT_DIM }).add_modifier(Modifier::BOLD)));
+    row2.push(Span::styled(format!(" {}", if filter_active { "Changed only" } else { "All layers" }),
+        Style::default().fg(if filter_active { ACCENT } else { TEXT_SECONDARY })));
+    row2.push(sep());
+    row2.push(Span::styled(" t ", Style::default().fg(BG).bg(if type_filter_active { ACCENT } else { TEXT_DIM }).add_modifier(Modifier::BOLD)));
+    row2.push(Span::styled(format!(" Type: {}", state.layer_type_filter.label()),
+        Style::default().fg(if type_filter_active { ACCENT } else { TEXT_SECONDARY })));
+    row2.push(sep());
+    row2.extend(binding("J", "Export JSON"));
+    row2.push(sep());
+    row2.extend(binding("C", "Export CSV"));
+
+    // Row 3 (if a status message is present) — surface it inline.
+    let mut lines = vec![Line::from(row1), Line::from(row2)];
     if let Some(ref msg) = state.status_message {
-        spans.push(Span::styled(format!("  |  {}", msg), Style::default().fg(ACCENT)));
+        lines.push(Line::from(vec![
+            Span::styled(" ✓ ", Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {}", msg), Style::default().fg(ACCENT)),
+        ]));
     }
 
     f.render_widget(
-        Paragraph::new(Line::from(spans))
-            .alignment(Alignment::Center)
+        Paragraph::new(Text::from(lines))
+            .alignment(Alignment::Left)
             .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(BORDER)).style(Style::default().bg(SURFACE))),
         area,
     );

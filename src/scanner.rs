@@ -239,30 +239,38 @@ pub enum SelectionMode {
 impl ModelSelectionState {
     pub fn new() -> Result<Self> {
         let models = scan_for_models()?;
-        Ok(Self {
+        Ok(Self::from_models(models))
+    }
+
+    pub fn from_models(models: Vec<ModelInfo>) -> Self {
+        Self {
             models,
             selected_a: None,
             selected_b: None,
             current_selection: SelectionMode::SelectA,
             status_message: None,
-        })
+        }
     }
 }
 
 /// Standalone entry: creates its own terminal, runs the selection UI,
 /// and tears it down. Use this when invoked outside the unified flow.
 pub fn run_model_selection() -> Result<(Option<PathBuf>, Option<PathBuf>)> {
+    let models = scan_for_models()?;
     let mut terminal = TerminalGuard::new()?;
-    run_model_selection_with(&mut terminal)
+    run_model_selection_with(&mut terminal, models)
 }
 
 /// Runs the model-selection UI on a *caller-provided* terminal so the
 /// same TerminalGuard can be reused across scanner → loading → detail
-/// without ever leaving raw mode.
+/// without ever leaving raw mode. Pre-scanned models are passed in so
+/// the caller can run the (slow) filesystem walk on a worker thread
+/// while displaying its own progress UI.
 pub fn run_model_selection_with(
     terminal: &mut TerminalGuard,
+    models: Vec<ModelInfo>,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
-    let mut state = ModelSelectionState::new()?;
+    let mut state = ModelSelectionState::from_models(models);
     let result = run_selection_loop(terminal, &mut state);
 
     match result {

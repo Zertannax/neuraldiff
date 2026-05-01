@@ -54,8 +54,15 @@ pub fn run_unified() -> Result<()> {
     let mut terminal = TerminalGuard::new()?;
 
     loop {
+        // Phase 0 — kick off filesystem scan on a worker; render a
+        // "scanning…" frame so the user never sees a black screen.
+        let models = match run_scanning_phase(&mut terminal)? {
+            Some(m) => m,
+            None => return Ok(()), // user pressed q during scan
+        };
+
         // Phase 1 — interactive scan & pick.
-        let (a, b) = crate::scanner::run_model_selection_with(&mut terminal)?;
+        let (a, b) = crate::scanner::run_model_selection_with(&mut terminal, models)?;
         let (path_a, path_b) = match (a, b) {
             (Some(a), Some(b)) => (a, b),
             _ => return Ok(()), // user cancelled — exit cleanly
@@ -80,6 +87,90 @@ pub fn run_unified() -> Result<()> {
         // "back to scanner" key could `continue` here instead.
         return Ok(());
     }
+}
+
+/// Runs a "scanning your system…" screen on the shared terminal while
+/// scanner::scan_for_models() walks the filesystem on a worker thread.
+/// Returns `Some(models)` on completion, `None` if the user pressed q.
+fn run_scanning_phase(
+    terminal: &mut TerminalGuard,
+) -> Result<Option<Vec<crate::scanner::ModelInfo>>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = crate::scanner::scan_for_models();
+        tx.send(result).ok();
+    });
+
+    let mut frame_idx: usize = 0;
+    let tick = Duration::from_millis(80);
+    let start = Instant::now();
+
+    loop {
+        terminal.draw(|f| draw_scanning(f, SPINNER[frame_idx % 10], start.elapsed().as_secs_f64()))?;
+        frame_idx += 1;
+
+        match rx.try_recv() {
+            Ok(result) => return Ok(Some(result?)),
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                anyhow::bail!("Scanner thread panicked");
+            }
+        }
+
+        if crossterm::event::poll(tick)?
+            && let Event::Key(key) = event::read()?
+        {
+            let quit = key.code == KeyCode::Char('q')
+                || (key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c'));
+            if quit {
+                return Ok(None);
+            }
+        }
+    }
+}
+
+fn draw_scanning(f: &mut Frame, spinner: &str, elapsed: f64) {
+    let area = f.area();
+    f.render_widget(Block::default().style(Style::default().bg(BG)), area);
+
+    let popup = centered_rect(60, 30, area);
+    f.render_widget(ratatui::widgets::Clear, popup);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(format!("    ◆ {}", LOGO), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  v{}", env!("CARGO_PKG_VERSION")), Style::default().fg(TEXT_DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("    {} ", spinner), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled("Scanning your system for .safetensors models…", Style::default().fg(TEXT_PRIMARY)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("    ", Style::default()),
+            Span::styled("Searching home, .cache/huggingface, Downloads, Documents…", Style::default().fg(TEXT_SECONDARY)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(format!("    ⏱  {:.1}s", elapsed), Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("              ", Style::default()),
+            Span::styled(" q ", Style::default().fg(BG).bg(TEXT_DIM).add_modifier(Modifier::BOLD)),
+            Span::styled(" Cancel", Style::default().fg(TEXT_SECONDARY)),
+        ]),
+        Line::from(""),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(SURFACE));
+
+    let paragraph = Paragraph::new(Text::from(lines))
+        .block(block)
+        .alignment(Alignment::Left);
+
+    f.render_widget(paragraph, popup);
 }
 
 /// Show a loading screen while computing the diff in a background thread,

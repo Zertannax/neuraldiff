@@ -1,162 +1,193 @@
-# NeuralDiff — Contexte de développement
+# NeuralDiff — Session context
 
-> Ce fichier résume l'état du projet, les décisions prises, et ce qui reste à faire.
-> Mis à jour le 2026-05-01.
-
----
-
-## Statut actuel
-
-**v0.1.1** — feature-complete, compilable, testable, pushé sur `master`.
-
-Tous les items v0.1.1 sont cochés dans `TODO.md`.
-Commit actuel : `74cefcb`.
-La prochaine étape est **v0.2.0**.
+> Last updated: 2026-05-01
+> Repo: **public** at https://github.com/Zertannax/neuraldiff
+> Latest release: **v0.2.0**
+> Current branch: `master`, in sync with `origin/master`
 
 ---
 
-## Ce qui a été fait (sessions précédentes)
+## TL;DR — pick up here
 
-### Review complète du code (commit `cc5b7ab`)
+The tool **works end-to-end on real models** (Qwen3-0.6B Base vs Instruct verified, 596M params, 8s diff). The repo is **public on GitHub**, tagged **v0.2.0**, with a complete README, brand kit, CI, and roadmap. Next milestones tracked in `TODO.md`.
 
-Problèmes identifiés et corrigés :
-
-| Problème | Fix |
-|---|---|
-| `load_tensor_data` rouvrait le fichier pour chaque tenseur | `Arc<Mmap>` stocké dans `ModelSnapshot`, accès par offset |
-| `regex_captures` — fausse regex (match sur le string pattern) | Vraies `Regex` compilées via `OnceLock` (crate `regex = "1"`) |
-| `.unwrap()` dans le hot path de `compute_tensor_diff` | `.with_context()` avec messages explicites |
-| `missing_tensors` calculés puis silencieusement ignorés | Exposés dans `DiffSummary.missing_tensors` + JSON export |
-| Scanner sautait les modèles HuggingFace (trop superficiel) | Scan récursif avec depth configurable (`.cache/huggingface` → depth 6) |
-| `HashMap<PathBuf, bool>` pour dédupliquer | `HashSet<PathBuf>` |
-| `eprintln!` au lieu de tracing | `tracing::warn!` + subscriber initialisé dans `main` |
-| Aucun test pour `metrics.rs` | 9 tests ajoutés dans `tests/metrics_tests.rs` |
-
-### v0.1.1 features (commits `cd6c32a`, `99caae7`)
-
-- **Loading screen** : `run_with_loading()` — spinner braille animé pendant `compute_diff` en thread background
-- **Heatmap** : `[Enter]` en Detail view charge les deltas réels et affiche une grille ░▒▓█ GREEN→RED
-- **Inspect** : `neuraldiff inspect model.safetensors` — tableau complet (nom, shape, dtype, params)
-- **Filtre type** : `[t]` cycle `All → Attn → MLP → Norm → Embed → Head → Other`
-- **Export CSV** : `[C]` écrit `diff.csv` avec tous les tenseurs et leurs métriques
-- **Warnings** : imports inutilisés retirés, variables inutilisées corrigées
+To continue work: `cd /mnt/c/Users/remic/neuraldiff` and look at the **"What's next"** section below.
 
 ---
 
-## Ce qui a été fait (session du 2026-05-01)
+## What got done (session 2026-05-01)
 
-### Corrections de compilation (commit `74cefcb`)
+15 commits, 33 tests green, 7 Critical bugs fixed, full publication setup.
 
-Le code récupéré depuis GitHub ne compilait pas. 3 erreurs corrigées :
+### Code fixes
+- **C2/C3/C4** — typed `LayerComponent` enum replaces stringly-typed round-trip in `mapper.rs`. Distinct LayerDiff per norm component (was collapsing `input_layernorm` + `post_attention_layernorm`).
+- **C5** — `Arc<ModelSnapshot>` cached in `AppState`; heatmap no longer re-mmaps multi-GB files on every Enter.
+- **C8/C9** — selection state reset after sort/filter changes.
+- **C10/C11/C12** — RAII `TerminalGuard` in `src/terminal.rs`; terminal always restored on error or panic.
+- **C17** — UTF-8-safe `truncate_path` / `truncate_str` (no panic on accented paths).
 
-| Fichier | Erreur | Correction |
-|---|---|---|
-| `src/loader.rs:99` | `cannot infer type of type parameter B` | Ajout explicite `: Vec<f32>` sur le match dtype |
-| `src/tui.rs:66-67` | `borrow of moved value: path_a/path_b` | Clonage des `PathBuf` avant passage au thread |
-| `Cargo.toml:50` | `EnvFilter` not found | Ajout feature `env-filter` sur `tracing-subscriber` |
+### Features
+- **Unified TUI flow**: `neuraldiff` (no args) → scan → pick → diff → detail in one terminal session. No flash, no re-entry.
+- **WSL-aware scanner**: detects WSL via `/proc/version`, walks `/mnt/<drive>/Users/$USER/`, skips AppData/Windows/etc.
+- **Loading-screen during scan**: no more black screen at startup.
+- **Smooth gradient heatmap**: half-block (▀) chars, RGB ramp, doubled vertical resolution, stats inline (min/p50/mean/p95/max).
+- **Sober TUI footer**: keys + labels, active filters highlighted with green chip.
+- **Branded UI**: ◆ NEURALDIFF logo, ◐A / ◑B model markers (cyan / pink), aligned palette.
+- **Extended CLI**: `summary`, `inspect --top N`, `inspect --json`, `scan --root <dir>`, `scan --json`, `diff --output <file>`, `diff --threshold` (accepted but pass-through).
 
-**Tests** : 20/20 passent (4 scanner + 2 diff + 3 loader + 2 mapper + 9 metrics).
-
-### Commande `scan` ajoutée
-
-Nouvelle sous-commande CLI :
-```bash
-neuraldiff scan
-```
-Affiche la liste de tous les modèles `.safetensors` trouvés sur le système.
-
-### Améliorations du scanner
-
-- Scan du répertoire **home** lui-même (depth 2) — trouve les repos git clone directement dans home
-- Ajout de chemins courants : `Desktop`, `checkpoints`, `weights`, `huggingface`, `transformers`
-- Augmentation des profondeurs max (4→5 pour la plupart)
-
-### Correction sensibilité TUI
-
-Problème : les flèches du clavier déclenchaient plusieurs événements (Press + Repeat + Release), causant des sauts de sélection.
-
-Solution : filtrage des événements `KeyEventKind` dans `handle_selection_key()` — seul `Press` est traité.
-
-### Tests scanner ajoutés
-
-4 tests unitaires dans `scanner.rs` :
-- `test_scan_recursive` — trouve un modèle à 2 niveaux de profondeur
-- `test_scan_respects_max_depth` — respecte la limite de profondeur
-- `test_scan_skips_hidden_dirs` — ignore les dossiers cachés (sauf `.cache`)
-- `test_scan_allows_cache_dir` — autorise explicitement `.cache/huggingface`
+### Publication
+- LICENSE MIT in repo root
+- README rewritten with hero, screenshots from real Qwen diff, full CLI reference
+- Brand kit in `assets/` (logo, icon, hero, social-card, divider)
+- TODO.md = phased roadmap (Phase 1 → v0.2.0, Phase 2 → release infra, Phase 3 → hardening, Phase 4 → stretch)
+- .gitignore expanded
+- GitHub Actions CI (Linux/macOS/Windows build + test, advisory clippy) — passing
+- v0.2.0 git tag + GitHub release with notes
+- Cargo.toml metadata polished (description, keywords, categories, exclude)
+- Personal email scrubbed from history via `git filter-repo` → `Zertannax@users.noreply.github.com`
+- Repo switched **private → public**
 
 ---
 
-## Architecture
+## Current architecture
 
 ```
 src/
-├── main.rs        — CLI entry, inspect command, run_with_loading dispatch
-├── cli.rs         — Clap: Diff { model_a, model_b, json }, Inspect { model }
-├── types.rs       — ModelSnapshot (Arc<Mmap>), DiffResult, AppState, HeatmapData, LayerTypeFilter
-├── loader.rs      — load() → ModelSnapshot, load_tensor_data() via stored mmap offset
-├── diff.rs        — compute_diff() parallelisé rayon, compute_summary()
-├── mapper.rs      — map_layers() avec regex LLaMA/GPT-2/Falcon, anomaly z-score
-├── metrics.rs     — l2_norm(), cosine_similarity()
-├── scanner.rs     — scan récursif avec depth limits, TUI de sélection de modèles
-└── tui.rs         — run_with_loading(), draw_ui(), draw_heatmap(), export_csv()
+├── main.rs          — CLI dispatch, summary printer, csv writer, format helpers
+├── cli.rs           — Clap definitions (Diff, Summary, Inspect, Scan + aliases d/i/s)
+├── lib.rs           — module re-exports
+├── types.rs         — ModelSnapshot, DiffResult, AppState, LayerType, LayerTypeFilter
+├── loader.rs        — safetensors load via Arc<Mmap>, dtype decoding
+├── diff.rs          — compute_diff (rayon-parallel), compute_summary
+├── mapper.rs        — typed LayerComponent + LayerKey enums; map_layers + anomaly z-score
+├── metrics.rs       — l2_norm, cosine_similarity
+├── scanner.rs       — recursive .safetensors discovery, model-selection TUI
+├── terminal.rs      — RAII TerminalGuard for raw mode + alt screen
+├── tui.rs           — main TUI, run_unified, loading screen, scanning screen,
+│                      heatmap, summary view, detail view, footer, help
+└── web.rs           — stub for v1.0.0 (currently no-op behind `web` feature)
 ```
 
-### Features Cargo
+### Key decisions
+- **`LayerType` schema is frozen** — public JSON keeps `embedding|attention|mlp|norm|head|other`. Fine-grained variants live in private `LayerComponent` (mapper.rs only).
+- **`Arc<ModelSnapshot>` everywhere** — load once, share between diff worker and TUI heatmap.
+- **One TerminalGuard per session** — `run_unified` owns it across scanning/loading/detail. No re-entry.
+- **Tracing → stderr** — keeps `--json` stdout clean.
+- **Half-block heatmap** — `▀` paints fg+bg per cell, doubling vertical resolution.
 
-- `default = ["tui"]` — compile avec ratatui + crossterm
-- `web` — ajoute tokio + axum (stub, v0.2.0)
+### Cargo features
+- `default = ["tui"]` — enables ratatui + crossterm
+- `web` — stub (tokio + axum, not implemented)
 
-### Dépendances clés
-
-- `safetensors = "0.4"` + `memmap2 = "0.9"` — lecture zero-copy
-- `rayon = "1.10"` — parallélisme tenseurs
-- `regex = "1.11"` — matching architecture modèles
-- `half = "2.4"` — conversion F16/BF16 → F32
-- `ratatui = "0.29"` + `crossterm = "0.28"` — TUI
+### Test fixtures
+- `tests/fixtures/tiny_model_a.safetensors` — minimal LLaMA-style, 19 tensors
+- `tests/fixtures/tiny_model_b.safetensors` — same shape, modified weights
 
 ---
 
-## Décisions de design
+## Local test setup (user's machine)
 
-- **`model_a/model_b` sont des `String`** (pas `Option<String>`) dans `DiffResult` — ils sont toujours présents
-- **`Arc<Mmap>` dans `ModelSnapshot`** — évite de rouvrir le fichier pour chaque tenseur lors du diff
-- **Heatmap chargée à la demande** — pas stockée dans `DiffResult` pour économiser la mémoire
-- **Scanner récursif max depth 5** (6 pour `.cache/huggingface`) — HuggingFace hub path est profond
-- **`compute_diff` dans un thread séparé** — la TUI reste réactive pendant le calcul
+The user has these models on disk for end-to-end testing:
+
+```
+/mnt/c/Users/remic/Qwen3-0.6B/model.safetensors          (1.4 GB, instruct)
+/mnt/c/Users/remic/Qwen3-0.6B-Base/model.safetensors     (1.1 GB, base)
+~/.cache/huggingface/hub/models--google--gemma-4-31b-it/ (58 GB, multi-shard — needs multi-shard support to diff)
+```
+
+Qwen3 Base vs Instruct is the canonical happy-path demo: 596M params, 114 layers, 93.9% changed, `embed_tokens` flagged as anomaly (z=8.09).
+
+Convenience script (gitignored): `./run-qwen.sh` runs the diff on those two paths.
 
 ---
 
-## Prochaine étape : v0.2.0
+## What's next — pick up here
 
-### Priorité recommandée
+Roadmap is in `TODO.md`. Phase order:
 
-1. **Comparaison de répertoires** (`neuraldiff diff dir_a/ dir_b/`) — forte valeur pratique
-2. **Seuil configurable** (`--threshold 0.01`) — simple à implémenter
-3. **Web 3D** (Three.js sans CDN) — ambitieux, voir `SPEC_VIZ.md`
-4. **Diff partiel** (`--layers 0,1,2`) — utile pour les gros modèles
+### Phase 1 — finish v0.2.x (a few hours)
+- **Multi-shard support** — read `model.safetensors.index.json`, load all shards under one logical `ModelSnapshot`. Unblocks Llama 70B / Gemma 31B. **2-4h, biggest impact.**
+- **NaN / Inf detection (C14)** — currently propagates silently into JSON/CSV. Add `summary.nan_count`. **30 min.**
+- **C19** — `selected_tensor` bounds clamp after layer change. **10 min.**
+- **`--threshold` actually filters** — wired in CLI but pass-through. **15 min.**
+- **clippy zero-warnings** — currently 22 advisory warnings, mostly let-chain candidates. **1h.**
 
-### Tests
+### Phase 2 — release infrastructure
+- **`cargo dist`** — auto-build Linux/macOS/Windows binaries on each tag, attach to GitHub release. **45 min.**
+- **More Releases** — v0.2.1, v0.2.2 as fixes land.
 
-- `tests/diff_tests.rs` : 2 tests end-to-end sur les fixtures LLaMA ✅
-- `tests/loader_tests.rs` : 3 tests (load fixture, tensor data f32, consistency) ✅
-- `tests/mapper_tests.rs` : 2 tests (LLaMA grouping, anomaly detection) — manque GPT-2/Falcon
-- `tests/metrics_tests.rs` : 9 tests (L2 norm, cosine similarity edge cases) ✅
-- `tests/scanner_tests.rs` : 4 tests unitaires dans `scanner.rs` ✅
+### Phase 3 — hardening
+- Per-dtype tests (F16, BF16, I64, etc.)
+- F64 accumulators in metric reductions for huge models
+- Heatmap math (C6/C7) — bail on shape > 2D, fix downsample off-by-one
+- Per-LayerType anomaly z-score pools (currently mixes embed/head/mlp)
+- Scrolling for long layer / tensor lists
 
-### Limitations connues
-
-- **Format support** : Seuls les fichiers `.safetensors` sont supportés. Les modèles `.gguf` (LM Studio, Ollama) et `.pt`/`.pth` (PyTorch) ne sont pas lisibles.
-- **Fichiers incomplets** : Un fichier `.safetensors` incomplet (téléchargement interrompu) provoque `MetadataIncompleteBuffer`. Solution : re-télécharger le modèle.
-- **Windows build** : Compilation debug peut échouer par manque d'espace disque ou erreurs PDB. Utiliser `cargo test --jobs 1` ou `--release`.
+### Phase 4 — stretch (v1.0.0)
+- Web 3D viz (Three.js, no CDN)
+- GGUF support
+- LoRA diff mode
+- Streaming for >10GB models
+- PNG export of heatmaps
 
 ---
 
-## Fixtures de test
+## Known issues (not yet fixed)
 
+Tracked Critical bugs from the original audit, not yet addressed:
+
+| Bug | File | Symptom |
+|-----|------|---------|
+| C1  | loader.rs:90 | `start + data_len` overflow not checked |
+| C6  | tui.rs ~308 | 3D+ tensors flattened arbitrarily for heatmap |
+| C7  | tui.rs ~336 | downsample_grid edge off-by-one |
+| C13 | loader.rs:108 | i64/i32 → f32 silent precision loss on token-id tensors |
+| C14 | diff.rs:97 | NaN propagates into max/mean/std silently |
+| C15 | mapper.rs:23 | f32 accumulator loses precision on 70B+ models |
+| C16 | tui.rs render_l2_bar | saturating cast undocumented (acceptable but fragile) |
+| C18 | loader.rs:113 | Bool decoder accepts any non-zero byte |
+| C19 | tui.rs | selected_tensor not bounds-clamped after layer change |
+
+Plus 38 Important + 14 Minor findings from the same audit, listed in the original review (not in this file — Phase 3 will surface them as GitHub issues for transparency).
+
+---
+
+## Quick commands cheat sheet
+
+```bash
+# Build
+cd /mnt/c/Users/remic/neuraldiff
+cargo build --release
+
+# Run unified TUI (default)
+./target/release/neuraldiff
+
+# Direct diff on Qwen
+./run-qwen.sh
+# or
+./target/release/neuraldiff diff /mnt/c/Users/remic/Qwen3-0.6B-Base/model.safetensors /mnt/c/Users/remic/Qwen3-0.6B/model.safetensors
+
+# Text-only summary
+./target/release/neuraldiff summary <a> <b> -n 10
+
+# Tests + lint
+cargo test --all-features
+cargo clippy --all-targets --all-features
+
+# GitHub via Windows gh CLI from WSL
+gh.exe repo view Zertannax/neuraldiff
+gh.exe run list --repo Zertannax/neuraldiff --limit 5
+gh.exe release view v0.2.0 --repo Zertannax/neuraldiff
+
+# Push (needs gh.exe token because git on WSL has no creds)
+TOKEN=$(gh.exe auth token | tr -d '\r\n')
+git push "https://x-access-token:${TOKEN}@github.com/Zertannax/neuraldiff.git" master
 ```
-tests/fixtures/tiny_model_a.safetensors   — architecture LLaMA miniature (19 tenseurs)
-tests/fixtures/tiny_model_b.safetensors   — même architecture, poids modifiés
-models/model_a.safetensors                — modèle de démo
-models/model_b.safetensors                — modèle de démo
-```
+
+---
+
+## Author identity
+
+Commits are now signed as `Zertannax <Zertannax@users.noreply.github.com>` (personal email scrubbed via `git filter-repo`). Older author entries `NeuralDiff <neuraldiff@example.com>` and `Remic <remic@neuraldiff.dev>` remain in the rewritten history — both are non-personal placeholders.
+
+When committing during a Claude session, the trailer `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` is added per the user's preference.

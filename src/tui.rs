@@ -1147,4 +1147,32 @@ mod tests {
     fn truncate_path_passthrough_when_short() {
         assert_eq!(truncate_path("/a/b", 100), "/a/b");
     }
+
+    #[test]
+    fn sort_key_resets_selection() {
+        let mut state = AppState::default();
+        state.selected_layer = 7;
+        state.selected_tensor = 4;
+        state.show_heatmap = true;
+        let key = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
+        let quit = handle_key_event(key, &mut state);
+        assert!(!quit);
+        assert_eq!(state.selected_layer, 0);
+        assert_eq!(state.selected_tensor, 0);
+        assert!(!state.show_heatmap);
+    }
+
+    #[test]
+    fn filter_key_resets_selection() {
+        let mut state = AppState::default();
+        state.selected_layer = 7;
+        state.selected_tensor = 4;
+        state.show_heatmap = true;
+        let key = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
+        let quit = handle_key_event(key, &mut state);
+        assert!(!quit);
+        assert_eq!(state.selected_layer, 0);
+        assert_eq!(state.selected_tensor, 0);
+        assert!(!state.show_heatmap);
+    }
 }

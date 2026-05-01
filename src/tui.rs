@@ -46,11 +46,66 @@ pub fn run_app(mut state: AppState) -> Result<()> {
     run_main_loop(&mut terminal, &mut state)
 }
 
-/// Show a loading screen while computing the diff in a background thread,
-/// then transition directly into the main TUI.
-pub fn run_with_loading(path_a: &Path, path_b: &Path) -> Result<()> {
+/// One-stop entry point: scanner → diff → detail, all inside a single
+/// terminal session. The TerminalGuard is created exactly once, so
+/// transitions between phases never flash, never leave raw mode, and
+/// never restore + re-enter the alternate screen.
+pub fn run_unified() -> Result<()> {
     let mut terminal = TerminalGuard::new()?;
 
+    loop {
+        // Phase 1 — interactive scan & pick.
+        let (a, b) = crate::scanner::run_model_selection_with(&mut terminal)?;
+        let (path_a, path_b) = match (a, b) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return Ok(()), // user cancelled — exit cleanly
+        };
+
+        // Phase 2 — loading screen + background diff compute.
+        let diff = match run_loading_phase(&mut terminal, &path_a, &path_b)? {
+            Some(d) => d,
+            None => return Ok(()), // user pressed q during loading
+        };
+
+        // Phase 3 — main detail loop with cached snapshots.
+        let snap_a = std::sync::Arc::new(crate::loader::load(&path_a)?);
+        let snap_b = std::sync::Arc::new(crate::loader::load(&path_b)?);
+        let mut state = AppState::default();
+        state.diff = Some(diff);
+        state.snapshots = Some((snap_a, snap_b));
+
+        run_main_loop(&mut terminal, &mut state)?;
+
+        // For now `q` from the main loop ends the session. A future
+        // "back to scanner" key could `continue` here instead.
+        return Ok(());
+    }
+}
+
+/// Show a loading screen while computing the diff in a background thread,
+/// then transition directly into the main TUI. Standalone entry — creates
+/// its own terminal. For the unified flow use [`run_unified`] instead.
+pub fn run_with_loading(path_a: &Path, path_b: &Path) -> Result<()> {
+    let mut terminal = TerminalGuard::new()?;
+    let diff = match run_loading_phase(&mut terminal, path_a, path_b)? {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+    let snap_a = std::sync::Arc::new(crate::loader::load(path_a)?);
+    let snap_b = std::sync::Arc::new(crate::loader::load(path_b)?);
+    let mut state = AppState::default();
+    state.diff = Some(diff);
+    state.snapshots = Some((snap_a, snap_b));
+    run_main_loop(&mut terminal, &mut state)
+}
+
+/// Renders the loading screen while compute_diff runs on a worker thread.
+/// Returns `Some(diff)` on completion, `None` if the user cancelled with `q`.
+fn run_loading_phase(
+    terminal: &mut TerminalGuard,
+    path_a: &Path,
+    path_b: &Path,
+) -> Result<Option<crate::types::DiffResult>> {
     let path_a_buf = path_a.to_path_buf();
     let path_b_buf = path_b.to_path_buf();
     let display_a = path_a_buf.display().to_string();
@@ -66,42 +121,30 @@ pub fn run_with_loading(path_a: &Path, path_b: &Path) -> Result<()> {
     let tick = Duration::from_millis(80);
     let start = Instant::now();
 
-    let diff_result = loop {
+    loop {
         terminal.draw(|f| {
             draw_loading(f, &display_a, &display_b, SPINNER[frame_idx % 10], start.elapsed().as_secs_f64())
         })?;
         frame_idx += 1;
 
         match rx.try_recv() {
-            Ok(result) => break result,
+            Ok(result) => return Ok(Some(result?)),
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
                 anyhow::bail!("Diff computation thread panicked");
             }
         }
 
-        if crossterm::event::poll(tick)? {
-            if let Event::Key(key) = event::read()? {
-                let quit = key.code == KeyCode::Char('q')
-                    || (key.modifiers == KeyModifiers::CONTROL
-                        && key.code == KeyCode::Char('c'));
-                if quit {
-                    return Ok(());
-                }
+        if crossterm::event::poll(tick)?
+            && let Event::Key(key) = event::read()?
+        {
+            let quit = key.code == KeyCode::Char('q')
+                || (key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c'));
+            if quit {
+                return Ok(None);
             }
         }
-    };
-
-    let diff = diff_result?;
-    // Pre-load snapshots once and stash them on AppState. compute_heatmap()
-    // reuses these instead of re-mmapping multi-GB files on every Enter.
-    let snap_a = std::sync::Arc::new(crate::loader::load(path_a)?);
-    let snap_b = std::sync::Arc::new(crate::loader::load(path_b)?);
-    let mut state = AppState::default();
-    state.diff = Some(diff);
-    state.snapshots = Some((snap_a, snap_b));
-
-    run_main_loop(&mut terminal, &mut state)
+    }
 }
 
 fn run_main_loop(

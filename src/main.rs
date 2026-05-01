@@ -20,14 +20,22 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // No subcommand → behave like `diff` without args (interactive scan + pick).
-    let command = cli.command.unwrap_or(Commands::Diff {
-        model_a: None,
-        model_b: None,
-        json: false,
-        output: None,
-        threshold: 0.000_001,
-    });
+    // No subcommand → unified TUI: scan, pick, diff, explore, all in one
+    // terminal session, no flash between phases.
+    let command = match cli.command {
+        Some(c) => c,
+        None => {
+            #[cfg(feature = "tui")]
+            {
+                tui::run_unified()?;
+                return Ok(());
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                anyhow::bail!("neuraldiff was built without the tui feature; pass a subcommand")
+            }
+        }
+    };
 
     match command {
         Commands::Diff { model_a, model_b, json, output, threshold: _ } => {

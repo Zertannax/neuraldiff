@@ -249,10 +249,21 @@ impl ModelSelectionState {
     }
 }
 
+/// Standalone entry: creates its own terminal, runs the selection UI,
+/// and tears it down. Use this when invoked outside the unified flow.
 pub fn run_model_selection() -> Result<(Option<PathBuf>, Option<PathBuf>)> {
     let mut terminal = TerminalGuard::new()?;
+    run_model_selection_with(&mut terminal)
+}
+
+/// Runs the model-selection UI on a *caller-provided* terminal so the
+/// same TerminalGuard can be reused across scanner → loading → detail
+/// without ever leaving raw mode.
+pub fn run_model_selection_with(
+    terminal: &mut TerminalGuard,
+) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
     let mut state = ModelSelectionState::new()?;
-    let result = run_selection_loop(&mut terminal, &mut state);
+    let result = run_selection_loop(terminal, &mut state);
 
     match result {
         Ok(true) => Ok((

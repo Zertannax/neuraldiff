@@ -38,13 +38,18 @@ fn scan_dir_recursive(
         let path = entry.path();
 
         if path.is_dir() {
-            // Skip hidden dirs (except .cache which holds HuggingFace models)
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // Skip hidden dirs (except .cache which holds HuggingFace models)
             if name.starts_with('.') && name != ".cache" {
                 continue;
             }
+            // Skip huge dirs that never hold model checkpoints. Keeps WSL scans
+            // of /mnt/c/Users/* fast — AppData alone can be >300 GB of caches.
+            if is_skip_dir(name) {
+                continue;
+            }
             scan_dir_recursive(&path, depth + 1, max_depth, seen, models);
-        } else if path.extension().map_or(false, |ext| ext == "safetensors") {
+        } else if path.extension().is_some_and(|ext| ext == "safetensors") {
             if seen.insert(path.clone()) {
                 if let Ok(meta) = path.metadata() {
                     let size_mb = meta.len() as f64 / (1024.0 * 1024.0);
@@ -105,18 +110,75 @@ fn get_scan_roots() -> Vec<(PathBuf, usize)> {
         roots.push((PathBuf::from("/models"), 4));
         roots.push((PathBuf::from("/opt"), 4));
         roots.push((PathBuf::from("/usr/share"), 3));
+
+        // WSL: also scan the Windows user home and any /mnt/<drive>/Users/<user>/
+        // dirs that exist, so models stored on the Windows side are picked up.
+        if is_wsl() {
+            let user = std::env::var("USER").unwrap_or_default();
+            for drive_letter in &["c", "d", "e", "f"] {
+                let win_home = PathBuf::from(format!("/mnt/{}/Users/{}", drive_letter, user));
+                if win_home.exists() {
+                    roots.push((win_home.clone(), 3));
+                    for sub in &["Downloads", "Documents", "Desktop", "models", "AI", "ml"] {
+                        let p = win_home.join(sub);
+                        if p.exists() {
+                            roots.push((p, 5));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     roots
 }
 
+fn is_wsl() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|s| s.to_lowercase().contains("microsoft") || s.to_lowercase().contains("wsl"))
+        .unwrap_or(false)
+}
+
+fn is_skip_dir(name: &str) -> bool {
+    matches!(
+        name,
+        "AppData"
+            | "Windows"
+            | "Program Files"
+            | "Program Files (x86)"
+            | "ProgramData"
+            | "$Recycle.Bin"
+            | "$RECYCLE.BIN"
+            | "System Volume Information"
+            | "node_modules"
+            | "target"           // Rust build artifacts
+            | "venv"
+            | ".venv"
+            | "__pycache__"
+            | "snap"
+            | "miniforge3"
+            | "anaconda3"
+            | "Anaconda3"
+            | "Library"          // macOS, but harmless on Linux
+    )
+}
+
 fn format_location(path: &Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(stripped) = path.strip_prefix(&home) {
-            return format!("~/{}", stripped.display());
+    if let Some(home) = dirs::home_dir()
+        && let Ok(stripped) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", stripped.display());
+    }
+    // Friendly display of WSL Windows mounts: /mnt/c/Users/foo -> C:\Users\foo
+    let s = path.display().to_string();
+    if let Some(rest) = s.strip_prefix("/mnt/") {
+        if let Some((drive, tail)) = rest.split_once('/') {
+            if drive.len() == 1 {
+                return format!("{}:\\{}", drive.to_uppercase(), tail.replace('/', "\\"));
+            }
         }
     }
-    path.display().to_string()
+    s
 }
 
 pub fn format_size(size_mb: f64) -> String {

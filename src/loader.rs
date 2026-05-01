@@ -6,11 +6,12 @@ use safetensors::SafeTensors;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
+use std::sync::Arc;
 
 pub fn load(path: &Path) -> Result<ModelSnapshot> {
     let file = File::open(path)
         .with_context(|| format!("Failed to open file: {}", path.display()))?;
-    let mmap = unsafe { Mmap::map(&file)? };
+    let mmap = Arc::new(unsafe { Mmap::map(&file)? });
     let tensors = SafeTensors::deserialize(&mmap)
         .with_context(|| format!("Failed to parse safetensors: {}", path.display()))?;
 
@@ -35,14 +36,17 @@ pub fn load(path: &Path) -> Result<ModelSnapshot> {
             _ => DType::F32,
         };
 
+        let data = view.data();
+        let data_offset = data.as_ptr() as u64 - mmap.as_ptr() as u64;
+
         tensor_map.insert(
             name.to_string(),
             TensorMeta {
                 name: name.to_string(),
                 shape,
                 dtype,
-                data_offset: view.data().as_ptr() as u64 - mmap.as_ptr() as u64, // offset in mmap
-                data_len: view.data().len() as u64,
+                data_offset,
+                data_len: data.len() as u64,
             },
         );
     }
@@ -51,6 +55,7 @@ pub fn load(path: &Path) -> Result<ModelSnapshot> {
         path: path.to_path_buf(),
         tensors: tensor_map,
         total_params,
+        mmap,
     })
 }
 
@@ -60,18 +65,15 @@ fn read_f32_le(data: &[u8]) -> f32 {
 }
 
 fn read_i64_le(data: &[u8]) -> i64 {
-    let bits = u64::from_le_bytes([data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]]);
-    bits as i64
+    i64::from_le_bytes([data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]])
 }
 
 fn read_i32_le(data: &[u8]) -> i32 {
-    let bits = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    bits as i32
+    i32::from_le_bytes([data[0], data[1], data[2], data[3]])
 }
 
 fn read_i16_le(data: &[u8]) -> i16 {
-    let bits = u16::from_le_bytes([data[0], data[1]]);
-    bits as i16
+    i16::from_le_bytes([data[0], data[1]])
 }
 
 fn read_u16_le(data: &[u8]) -> u16 {
@@ -84,65 +86,31 @@ pub fn load_tensor_data(snapshot: &ModelSnapshot, name: &str) -> Result<Vec<f32>
         .get(name)
         .with_context(|| format!("Tensor '{}' not found in snapshot", name))?;
 
-    let file = File::open(&snapshot.path)?;
-    let mmap = unsafe { Mmap::map(&file)? };
-    let tensors = SafeTensors::deserialize(&mmap)?;
-    let view = tensors
-        .tensor(name)
-        .with_context(|| format!("Failed to get tensor '{}' from safetensors", name))?;
+    let start = meta.data_offset as usize;
+    let end = start + meta.data_len as usize;
+    let data = snapshot
+        .mmap
+        .get(start..end)
+        .with_context(|| format!("Tensor '{}' data range [{start}..{end}] out of mmap bounds", name))?;
 
-    let data = view.data();
     let numel = meta.shape.iter().product::<usize>();
 
     let f32_data = match meta.dtype {
-        DType::F32 => {
-            data.chunks_exact(4)
-                .map(read_f32_le)
-                .collect::<Vec<f32>>()
-        }
-        DType::F16 => {
-            data.chunks_exact(2)
-                .map(|chunk| f16::from_bits(read_u16_le(chunk)).to_f32())
-                .collect::<Vec<f32>>()
-        }
-        DType::BF16 => {
-            data.chunks_exact(2)
-                .map(|chunk| bf16::from_bits(read_u16_le(chunk)).to_f32())
-                .collect::<Vec<f32>>()
-        }
-        DType::I64 => {
-            data.chunks_exact(8)
-                .map(read_i64_le)
-                .map(|i| i as f32)
-                .collect::<Vec<f32>>()
-        }
-        DType::I32 => {
-            data.chunks_exact(4)
-                .map(read_i32_le)
-                .map(|i| i as f32)
-                .collect::<Vec<f32>>()
-        }
-        DType::I16 => {
-            data.chunks_exact(2)
-                .map(read_i16_le)
-                .map(|i| i as f32)
-                .collect::<Vec<f32>>()
-        }
-        DType::I8 => {
-            data.iter()
-                .map(|&b| (b as i8) as f32)
-                .collect::<Vec<f32>>()
-        }
-        DType::U8 => {
-            data.iter()
-                .map(|&b| b as f32)
-                .collect::<Vec<f32>>()
-        }
-        DType::Bool => {
-            data.iter()
-                .map(|&b| if b != 0 { 1.0 } else { 0.0 })
-                .collect::<Vec<f32>>()
-        }
+        DType::F32 => data.chunks_exact(4).map(read_f32_le).collect(),
+        DType::F16 => data
+            .chunks_exact(2)
+            .map(|c| f16::from_bits(read_u16_le(c)).to_f32())
+            .collect(),
+        DType::BF16 => data
+            .chunks_exact(2)
+            .map(|c| bf16::from_bits(read_u16_le(c)).to_f32())
+            .collect(),
+        DType::I64 => data.chunks_exact(8).map(|c| read_i64_le(c) as f32).collect(),
+        DType::I32 => data.chunks_exact(4).map(|c| read_i32_le(c) as f32).collect(),
+        DType::I16 => data.chunks_exact(2).map(|c| read_i16_le(c) as f32).collect(),
+        DType::I8  => data.iter().map(|&b| (b as i8) as f32).collect(),
+        DType::U8  => data.iter().map(|&b| b as f32).collect(),
+        DType::Bool => data.iter().map(|&b| if b != 0 { 1.0 } else { 0.0 }).collect(),
     };
 
     if f32_data.len() != numel {

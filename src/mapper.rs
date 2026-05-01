@@ -1,41 +1,36 @@
 use crate::types::{LayerDiff, LayerType, TensorDiff};
+use regex::Regex;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 pub fn map_layers(tensor_diffs: &[TensorDiff]) -> Vec<LayerDiff> {
     let mut layer_groups: HashMap<String, Vec<&TensorDiff>> = HashMap::new();
 
     for diff in tensor_diffs {
         let layer_key = extract_layer_key(&diff.name);
-        layer_groups
-            .entry(layer_key)
-            .or_default()
-            .push(diff);
+        layer_groups.entry(layer_key).or_default().push(diff);
     }
 
     let mut layers: Vec<LayerDiff> = layer_groups
         .into_iter()
         .map(|(key, diffs)| {
             let (layer_index, layer_type, layer_name) = parse_layer_key(&key);
-            
+
             let aggregate_l2 = {
-                let (weighted_sum, total_params) = diffs.iter()
+                let (weighted_sum, total_params) = diffs
+                    .iter()
                     .map(|d| {
                         let params = d.shape.iter().product::<usize>() as f32;
                         (d.l2_distance * params, params)
                     })
-                    .fold((0.0f32, 0.0f32), |(sum_l2, sum_p), (l2, p)| {
-                        (sum_l2 + l2, sum_p + p)
-                    });
-                if total_params > 0.0 {
-                    weighted_sum / total_params
-                } else {
-                    0.0
-                }
+                    .fold((0.0f32, 0.0f32), |(sl, sp), (l, p)| (sl + l, sp + p));
+                if total_params > 0.0 { weighted_sum / total_params } else { 0.0 }
             };
-            
-            let param_count = diffs.iter().map(|d| {
-                d.shape.iter().product::<usize>() as u64
-            }).sum();
+
+            let param_count = diffs
+                .iter()
+                .map(|d| d.shape.iter().product::<usize>() as u64)
+                .sum();
 
             LayerDiff {
                 layer_index,
@@ -49,19 +44,18 @@ pub fn map_layers(tensor_diffs: &[TensorDiff]) -> Vec<LayerDiff> {
         })
         .collect();
 
-    layers.sort_by(|a, b| {
-        match (a.layer_index, b.layer_index) {
-            (Some(ai), Some(bi)) => ai.cmp(&bi),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
+    layers.sort_by(|a, b| match (a.layer_index, b.layer_index) {
+        (Some(ai), Some(bi)) => ai.cmp(&bi),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
     });
 
     if !layers.is_empty() {
         let l2_values: Vec<f32> = layers.iter().map(|l| l.aggregate_l2).collect();
         let mean = l2_values.iter().sum::<f32>() / l2_values.len() as f32;
-        let variance = l2_values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / l2_values.len() as f32;
+        let variance =
+            l2_values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / l2_values.len() as f32;
         let std_dev = variance.sqrt();
 
         if std_dev > 0.0 {
@@ -74,17 +68,60 @@ pub fn map_layers(tensor_diffs: &[TensorDiff]) -> Vec<LayerDiff> {
     layers
 }
 
+fn component_short(raw: &str, attn_names: &[&str], mlp_names: &[&str]) -> &'static str {
+    if attn_names.contains(&raw) { "attn" }
+    else if mlp_names.contains(&raw) { "mlp" }
+    else { "norm" }
+}
+
+// Compiled regex patterns — initialized once, reused for every tensor name.
+fn re_llama() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"^model\.layers\.(\d+)\.(self_attn|mlp|input_layernorm|post_attention_layernorm)",
+        )
+        .unwrap()
+    })
+}
+
+fn re_gpt2() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^transformer\.h\.(\d+)\.(attn|mlp|ln_1|ln_2)").unwrap()
+    })
+}
+
+fn re_falcon() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"^transformer\.h\.(\d+)\.(self_attention|mlp|ln_attn|ln_mlp|input_layernorm)",
+        )
+        .unwrap()
+    })
+}
+
 fn extract_layer_key(name: &str) -> String {
-    if let Some(caps) = regex_captures(r"model\.layers\.(\d+)\.(self_attn|mlp|input_layernorm|post_attention_layernorm)", name) {
-        let layer_num = &caps[0];
-        let component = &caps[1];
-        let comp_short = match component.as_str() {
-            "self_attn" => "attn",
-            "mlp" => "mlp",
-            "input_layernorm" | "post_attention_layernorm" => "norm",
-            _ => component.as_str(),
-        };
-        return format!("layer_{}_{}", layer_num, comp_short);
+    // LLaMA / Qwen style: model.layers.N.{self_attn,mlp,layernorm}
+    if let Some(caps) = re_llama().captures(name) {
+        let num = caps[1].to_string();
+        let comp = component_short(&caps[2], &["self_attn"], &["mlp"]);
+        return format!("layer_{}_{}", num, comp);
+    }
+
+    // GPT-2 style: transformer.h.N.{attn,mlp,ln_1,ln_2}
+    if let Some(caps) = re_gpt2().captures(name) {
+        let num = caps[1].to_string();
+        let comp = component_short(&caps[2], &["attn"], &["mlp"]);
+        return format!("layer_{}_{}", num, comp);
+    }
+
+    // Falcon style: transformer.h.N.{self_attention,mlp,ln_*}
+    if let Some(caps) = re_falcon().captures(name) {
+        let num = caps[1].to_string();
+        let comp = component_short(&caps[2], &["self_attention"], &["mlp"]);
+        return format!("layer_{}_{}", num, comp);
     }
 
     if name.contains("embed_tokens") || name.contains("embed") {
@@ -99,30 +136,6 @@ fn extract_layer_key(name: &str) -> String {
         return "final_norm".to_string();
     }
 
-    if let Some(caps) = regex_captures(r"transformer\.h\.(\d+)\.(attn|mlp|ln_1|ln_2)", name) {
-        let layer_num = &caps[0];
-        let component = &caps[1];
-        let comp_short = match component.as_str() {
-            "attn" => "attn",
-            "mlp" => "mlp",
-            "ln_1" | "ln_2" => "norm",
-            _ => component.as_str(),
-        };
-        return format!("layer_{}_{}", layer_num, comp_short);
-    }
-
-    if let Some(caps) = regex_captures(r"transformer\.h\.(\d+)\.(self_attention|mlp|ln_attn|ln_mlp|input_layernorm)", name) {
-        let layer_num = &caps[0];
-        let component = &caps[1];
-        let comp_short = match component.as_str() {
-            "self_attention" => "attn",
-            "mlp" => "mlp",
-            "ln_attn" | "ln_mlp" | "input_layernorm" => "norm",
-            _ => component.as_str(),
-        };
-        return format!("layer_{}_{}", layer_num, comp_short);
-    }
-
     let parts: Vec<&str> = name.split('.').collect();
     if parts.len() >= 2 {
         format!("{}.{}", parts[0], parts[1])
@@ -132,19 +145,16 @@ fn extract_layer_key(name: &str) -> String {
 }
 
 fn parse_layer_key(key: &str) -> (Option<usize>, LayerType, String) {
-    if key == "embedding" {
-        return (None, LayerType::Embedding, "embed_tokens".to_string());
-    }
-    if key == "head" {
-        return (None, LayerType::Head, "lm_head".to_string());
-    }
-    if key == "final_norm" {
-        return (None, LayerType::Norm, "norm".to_string());
+    match key {
+        "embedding" => return (None, LayerType::Embedding, "embed_tokens".to_string()),
+        "head" => return (None, LayerType::Head, "lm_head".to_string()),
+        "final_norm" => return (None, LayerType::Norm, "norm".to_string()),
+        _ => {}
     }
 
     if key.starts_with("layer_") {
-        let parts: Vec<&str> = key.split('_').collect();
-        if parts.len() >= 3 {
+        let parts: Vec<&str> = key.splitn(3, '_').collect();
+        if parts.len() == 3 {
             if let Ok(index) = parts[1].parse::<usize>() {
                 let layer_type = match parts[2] {
                     "attn" => LayerType::Attention,
@@ -159,74 +169,4 @@ fn parse_layer_key(key: &str) -> (Option<usize>, LayerType, String) {
     }
 
     (None, LayerType::Other, key.to_string())
-}
-
-fn regex_captures(pattern_str: &str, text: &str) -> Option<Vec<String>> {
-    if pattern_str == r"model\.layers\.(\d+)\.(self_attn|mlp|input_layernorm|post_attention_layernorm)" {
-        if text.starts_with("model.layers.") {
-            let rest = &text[13..];
-            if let Some(dot_pos) = rest.find('.') {
-                let num_str = &rest[..dot_pos];
-                let component_rest = &rest[dot_pos + 1..];
-                let component = if let Some(next_dot) = component_rest.find('.') {
-                    &component_rest[..next_dot]
-                } else {
-                    component_rest
-                };
-                if let Ok(num) = num_str.parse::<usize>() {
-                    let valid_components = ["self_attn", "mlp", "input_layernorm", "post_attention_layernorm"];
-                    if valid_components.contains(&component) {
-                        return Some(vec![num.to_string(), component.to_string()]);
-                    }
-                }
-            }
-        }
-        return None;
-    }
-    
-    if pattern_str == r"transformer\.h\.(\d+)\.(attn|mlp|ln_1|ln_2)" {
-        if text.starts_with("transformer.h.") {
-            let rest = &text[14..];
-            if let Some(dot_pos) = rest.find('.') {
-                let num_str = &rest[..dot_pos];
-                let component_rest = &rest[dot_pos + 1..];
-                let component = if let Some(next_dot) = component_rest.find('.') {
-                    &component_rest[..next_dot]
-                } else {
-                    component_rest
-                };
-                if let Ok(num) = num_str.parse::<usize>() {
-                    let valid_components = ["attn", "mlp", "ln_1", "ln_2"];
-                    if valid_components.contains(&component) {
-                        return Some(vec![num.to_string(), component.to_string()]);
-                    }
-                }
-            }
-        }
-        return None;
-    }
-    
-    if pattern_str == r"transformer\.h\.(\d+)\.(self_attention|mlp|ln_attn|ln_mlp|input_layernorm)" {
-        if text.starts_with("transformer.h.") {
-            let rest = &text[14..];
-            if let Some(dot_pos) = rest.find('.') {
-                let num_str = &rest[..dot_pos];
-                let component_rest = &rest[dot_pos + 1..];
-                let component = if let Some(next_dot) = component_rest.find('.') {
-                    &component_rest[..next_dot]
-                } else {
-                    component_rest
-                };
-                if let Ok(num) = num_str.parse::<usize>() {
-                    let valid_components = ["self_attention", "mlp", "ln_attn", "ln_mlp", "input_layernorm"];
-                    if valid_components.contains(&component) {
-                        return Some(vec![num.to_string(), component.to_string()]);
-                    }
-                }
-            }
-        }
-        return None;
-    }
-    
-    None
 }

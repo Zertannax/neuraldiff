@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -12,107 +12,83 @@ pub struct ModelInfo {
 
 pub fn scan_for_models() -> Result<Vec<ModelInfo>> {
     let mut models = Vec::new();
-    let mut seen = HashMap::new();
-    
-    let scan_dirs = get_scan_directories();
-    
-    for dir in scan_dirs {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                
-                if path.extension().map_or(false, |ext| ext == "safetensors") {
-                    if let Ok(metadata) = path.metadata() {
-                        let size_mb = metadata.len() as f64 / (1024.0 * 1024.0);
-                        let name = path.file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        
-                        if !seen.contains_key(&path) {
-                            seen.insert(path.clone(), true);
-                            models.push(ModelInfo {
-                                path: path.clone(),
-                                name: name.clone(),
-                                size_mb,
-                                location: format_location(&dir),
-                            });
-                        }
-                    }
-                } else if path.is_dir() {
-                    if let Ok(sub_entries) = std::fs::read_dir(&path) {
-                        for sub_entry in sub_entries.flatten() {
-                            let sub_path = sub_entry.path();
-                            if sub_path.extension().map_or(false, |ext| ext == "safetensors") {
-                                if let Ok(metadata) = sub_path.metadata() {
-                                    let size_mb = metadata.len() as f64 / (1024.0 * 1024.0);
-                                    let name = sub_path.file_stem()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("unknown")
-                                        .to_string();
-                                    
-                                    if !seen.contains_key(&sub_path) {
-                                        seen.insert(sub_path.clone(), true);
-                                        models.push(ModelInfo {
-                                            path: sub_path.clone(),
-                                            name: name.clone(),
-                                            size_mb,
-                                            location: format_location(&dir),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
+    let mut seen = HashSet::new();
+
+    for (dir, max_depth) in get_scan_roots() {
+        scan_dir_recursive(&dir, 0, max_depth, &mut seen, &mut models);
+    }
+
+    models.sort_by(|a, b| b.size_mb.partial_cmp(&a.size_mb).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(models)
+}
+
+fn scan_dir_recursive(
+    dir: &Path,
+    depth: usize,
+    max_depth: usize,
+    seen: &mut HashSet<PathBuf>,
+    models: &mut Vec<ModelInfo>,
+) {
+    if depth > max_depth {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        if path.is_dir() {
+            // Skip hidden dirs (except .cache which holds HuggingFace models)
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') && name != ".cache" {
+                continue;
+            }
+            scan_dir_recursive(&path, depth + 1, max_depth, seen, models);
+        } else if path.extension().map_or(false, |ext| ext == "safetensors") {
+            if seen.insert(path.clone()) {
+                if let Ok(meta) = path.metadata() {
+                    let size_mb = meta.len() as f64 / (1024.0 * 1024.0);
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let location =
+                        format_location(path.parent().unwrap_or(dir));
+                    models.push(ModelInfo { path, name, size_mb, location });
                 }
             }
         }
     }
-    
-    models.sort_by(|a, b| b.size_mb.partial_cmp(&a.size_mb).unwrap());
-    Ok(models)
 }
 
-fn get_scan_directories() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    
+/// Returns (root_dir, max_depth) pairs.
+/// HuggingFace hub gets a deeper limit because its path structure is 5+ levels deep.
+fn get_scan_roots() -> Vec<(PathBuf, usize)> {
+    let mut roots = Vec::new();
+
     if let Ok(current) = std::env::current_dir() {
-        dirs.push(current);
+        roots.push((current, 3));
     }
-    
+
     if let Some(home) = dirs::home_dir() {
-        dirs.push(home.clone());
-        
-        let subdirs = [
-            "Downloads",
-            "Documents",
-            ".cache/huggingface/hub",
-            ".cache/transformers",
-            "models",
-            "AI",
-            "ml",
-        ];
-        
-        for sub in &subdirs {
-            dirs.push(home.join(sub));
+        // HuggingFace hub: hub/models--x--y/snapshots/hash/model.safetensors — needs depth 6
+        roots.push((home.join(".cache/huggingface"), 6));
+        roots.push((home.join(".cache/transformers"), 5));
+
+        // Common user-created model dirs
+        for sub in &["Downloads", "Documents", "models", "AI", "ml"] {
+            roots.push((home.join(sub), 4));
         }
     }
-    
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(home) = dirs::home_dir() {
-            dirs.push(home.join("Downloads"));
-            dirs.push(home.join("Documents"));
-        }
-    }
-    
+
     #[cfg(not(target_os = "windows"))]
     {
-        dirs.push(PathBuf::from("/tmp"));
-        dirs.push(PathBuf::from("/models"));
+        roots.push((PathBuf::from("/tmp"), 2));
+        roots.push((PathBuf::from("/models"), 3));
     }
-    
-    dirs
+
+    roots
 }
 
 fn format_location(path: &Path) -> String {
@@ -136,7 +112,9 @@ pub fn format_size(size_mb: f64) -> String {
 
 // Model Selection UI
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -253,28 +231,22 @@ fn handle_selection_key(key: KeyEvent, state: &mut ModelSelectionState) -> Selec
             let max = state.models.len().saturating_sub(1);
             match state.current_selection {
                 SelectionMode::SelectA => {
-                    state.selected_a = Some(
-                        state.selected_a.map_or(0, |i| (i + 1).min(max))
-                    );
+                    state.selected_a = Some(state.selected_a.map_or(0, |i| (i + 1).min(max)));
                 }
                 SelectionMode::SelectB => {
-                    state.selected_b = Some(
-                        state.selected_b.map_or(0, |i| (i + 1).min(max))
-                    );
+                    state.selected_b = Some(state.selected_b.map_or(0, |i| (i + 1).min(max)));
                 }
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             match state.current_selection {
                 SelectionMode::SelectA => {
-                    state.selected_a = Some(
-                        state.selected_a.map_or(0, |i| i.saturating_sub(1))
-                    );
+                    state.selected_a =
+                        Some(state.selected_a.map_or(0, |i| i.saturating_sub(1)));
                 }
                 SelectionMode::SelectB => {
-                    state.selected_b = Some(
-                        state.selected_b.map_or(0, |i| i.saturating_sub(1))
-                    );
+                    state.selected_b =
+                        Some(state.selected_b.map_or(0, |i| i.saturating_sub(1)));
                 }
             }
         }
@@ -302,11 +274,8 @@ fn handle_selection_key(key: KeyEvent, state: &mut ModelSelectionState) -> Selec
 
 fn draw_selection_ui(f: &mut Frame, state: &ModelSelectionState) {
     let area = f.area();
-    
-    f.render_widget(
-        Block::default().style(Style::default().bg(BG)),
-        area,
-    );
+
+    f.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -326,25 +295,26 @@ fn draw_selection_ui(f: &mut Frame, state: &ModelSelectionState) {
 }
 
 fn draw_selection_header(f: &mut Frame, state: &ModelSelectionState, area: Rect) {
-    let title = " NEURALDIFF - Model Selection ";
-    
     let mut lines = vec![
-        Line::from(vec![
-            Span::styled(title, Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            " NEURALDIFF - Model Selection ",
+            Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
     ];
 
     let mode_text = match state.current_selection {
         SelectionMode::SelectA => {
-            let a_name = state.selected_a
+            let a_name = state
+                .selected_a
                 .and_then(|i| state.models.get(i))
                 .map(|m| m.name.as_str())
                 .unwrap_or("Not selected");
             format!("[Model A]: {}  |  Press Tab to select Model B", a_name)
         }
         SelectionMode::SelectB => {
-            let b_name = state.selected_b
+            let b_name = state
+                .selected_b
                 .and_then(|i| state.models.get(i))
                 .map(|m| m.name.as_str())
                 .unwrap_or("Not selected");
@@ -357,47 +327,52 @@ fn draw_selection_header(f: &mut Frame, state: &ModelSelectionState, area: Rect)
         Span::styled(mode_text, Style::default().fg(TEXT_SECONDARY)),
     ]));
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(SURFACE));
-
     let paragraph = Paragraph::new(Text::from(lines))
         .style(Style::default().fg(TEXT_PRIMARY))
-        .block(block);
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(BORDER))
+                .style(Style::default().bg(SURFACE)),
+        );
 
     f.render_widget(paragraph, area);
 }
 
 fn draw_model_list(f: &mut Frame, state: &ModelSelectionState, area: Rect) {
     let mut lines = vec![];
-    
+
     if state.models.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("No .safetensors models found on this system.", Style::default().fg(TEXT_SECONDARY)),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            "No .safetensors models found on this system.",
+            Style::default().fg(TEXT_SECONDARY),
+        )]));
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("Searched in: ", Style::default().fg(TEXT_SECONDARY)),
-            Span::styled("Home, Downloads, Documents, .cache/huggingface, current directory", Style::default().fg(ACCENT_INFO)),
+            Span::styled(
+                "Home, Downloads, Documents, .cache/huggingface, current directory",
+                Style::default().fg(ACCENT_INFO),
+            ),
         ]));
     } else {
-        lines.push(Line::from(vec![
-            Span::styled(format!("Found {} model(s):", state.models.len()), Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD)),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            format!("Found {} model(s):", state.models.len()),
+            Style::default().fg(TEXT_SECONDARY).add_modifier(Modifier::BOLD),
+        )]));
         lines.push(Line::from(""));
 
         for (i, model) in state.models.iter().enumerate() {
-            let is_selected_a = state.selected_a == Some(i);
-            let is_selected_b = state.selected_b == Some(i);
-            
+            let is_a = state.selected_a == Some(i);
+            let is_b = state.selected_b == Some(i);
+
             let mut spans = vec![];
-            
-            if is_selected_a && is_selected_b {
+
+            if is_a && is_b {
                 spans.push(Span::styled("[A+B] ", Style::default().fg(RED).add_modifier(Modifier::BOLD)));
-            } else if is_selected_a {
+            } else if is_a {
                 spans.push(Span::styled("[A]   ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)));
-            } else if is_selected_b {
+            } else if is_b {
                 spans.push(Span::styled("[B]   ", Style::default().fg(ACCENT_INFO).add_modifier(Modifier::BOLD)));
             } else {
                 spans.push(Span::styled("      ", Style::default()));
@@ -405,18 +380,16 @@ fn draw_model_list(f: &mut Frame, state: &ModelSelectionState, area: Rect) {
 
             spans.push(Span::styled(
                 format!("{:25} ", model.name),
-                if is_selected_a || is_selected_b {
+                if is_a || is_b {
                     Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(TEXT_PRIMARY)
                 },
             ));
-
             spans.push(Span::styled(
                 format!("{:8} ", format_size(model.size_mb)),
                 Style::default().fg(TEXT_SECONDARY),
             ));
-
             spans.push(Span::styled(
                 format!("({})", model.location),
                 Style::default().fg(TEXT_SECONDARY),
@@ -426,43 +399,36 @@ fn draw_model_list(f: &mut Frame, state: &ModelSelectionState, area: Rect) {
         }
     }
 
-    let block = Block::default()
-        .title(" Available Models ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(SURFACE));
-
     let paragraph = Paragraph::new(Text::from(lines))
         .style(Style::default().fg(TEXT_PRIMARY))
-        .block(block);
+        .block(
+            Block::default()
+                .title(" Available Models ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(BORDER))
+                .style(Style::default().bg(SURFACE)),
+        );
 
     f.render_widget(paragraph, area);
 }
 
 fn draw_selection_status(f: &mut Frame, state: &ModelSelectionState, area: Rect) {
-    let mut spans = vec![];
-    
-    if let Some(ref msg) = state.status_message {
-        spans.push(Span::styled(msg, Style::default().fg(RED)));
+    let spans = if let Some(ref msg) = state.status_message {
+        vec![Span::styled(msg.as_str(), Style::default().fg(RED))]
+    } else if state.selected_a.is_some() && state.selected_b.is_some() {
+        vec![Span::styled("Ready to compare! Press Enter to continue", Style::default().fg(ACCENT))]
     } else {
-        let a_ready = state.selected_a.is_some();
-        let b_ready = state.selected_b.is_some();
-        
-        if a_ready && b_ready {
-            spans.push(Span::styled("Ready to compare! Press Enter to continue", Style::default().fg(ACCENT)));
-        } else {
-            spans.push(Span::styled("Select two different models to compare", Style::default().fg(TEXT_SECONDARY)));
-        }
-    }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(SURFACE));
+        vec![Span::styled("Select two different models to compare", Style::default().fg(TEXT_SECONDARY))]
+    };
 
     let paragraph = Paragraph::new(Line::from(spans))
         .alignment(Alignment::Center)
-        .block(block);
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(BORDER))
+                .style(Style::default().bg(SURFACE)),
+        );
 
     f.render_widget(paragraph, area);
 }
@@ -475,14 +441,14 @@ fn draw_selection_footer(f: &mut Frame, area: Rect) {
         Span::styled("[q] Cancel", Style::default().fg(TEXT_SECONDARY)),
     ];
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(SURFACE));
-
     let paragraph = Paragraph::new(Line::from(spans))
         .alignment(Alignment::Center)
-        .block(block);
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(BORDER))
+                .style(Style::default().bg(SURFACE)),
+        );
 
     f.render_widget(paragraph, area);
 }

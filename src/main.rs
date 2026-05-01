@@ -3,7 +3,6 @@ use clap::Parser;
 use neuraldiff::cli::{Cli, Commands};
 use neuraldiff::diff::compute_diff;
 use neuraldiff::types::AppState;
-
 #[cfg(feature = "tui")]
 use neuraldiff::tui;
 
@@ -11,6 +10,11 @@ use neuraldiff::tui;
 use neuraldiff::scanner;
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     let cli = Cli::parse();
     
     match cli.command {

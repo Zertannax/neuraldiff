@@ -3,6 +3,7 @@ use crate::metrics::{cosine_similarity, l2_norm};
 use crate::types::{AnomalyInfo, DiffResult, DiffSummary, LayerDiff, TensorDiff};
 use anyhow::{Context, Result};
 use rayon::prelude::*;
+use std::collections::HashSet;
 use std::path::Path;
 
 const CHANGE_THRESHOLD: f32 = 1e-6;
@@ -15,58 +16,48 @@ pub fn compute_diff(model_a_path: &Path, model_b_path: &Path) -> Result<DiffResu
 
     let total_params = snapshot_a.total_params;
 
-    // Find common tensor names
-    let common_names: Vec<String> = snapshot_a
-        .tensors
-        .keys()
-        .filter(|name| snapshot_b.tensors.contains_key(*name))
-        .cloned()
-        .collect();
+    let names_a: HashSet<String> = snapshot_a.tensors.keys().cloned().collect();
+    let names_b: HashSet<String> = snapshot_b.tensors.keys().cloned().collect();
 
-    // Compute diff for each tensor in parallel
+    let common_names: Vec<String> = names_a.intersection(&names_b).cloned().collect();
+
+    let mut missing_tensors: Vec<String> = Vec::new();
+    for name in names_a.difference(&names_b) {
+        missing_tensors.push(format!("Only in A: {}", name));
+    }
+    for name in names_b.difference(&names_a) {
+        missing_tensors.push(format!("Only in B: {}", name));
+    }
+
+    if !missing_tensors.is_empty() {
+        tracing::warn!(
+            "{} tensors not present in both models",
+            missing_tensors.len()
+        );
+        for msg in &missing_tensors {
+            tracing::warn!("  {}", msg);
+        }
+    }
+
     let tensor_diffs: Vec<TensorDiff> = common_names
         .par_iter()
         .filter_map(|name| {
             match compute_tensor_diff(&snapshot_a, &snapshot_b, name) {
                 Ok(diff) => Some(diff),
                 Err(e) => {
-                    eprintln!("Warning: Failed to diff tensor '{}': {}", name, e);
+                    tracing::warn!("Failed to diff tensor '{}': {}", name, e);
                     None
                 }
             }
         })
         .collect();
 
-    // Map to layers
     let layers = crate::mapper::map_layers(&tensor_diffs);
-
-    // Compute summary
-    // Find missing tensors (only in A or only in B)
-    let missing_tensors = {
-        let names_a: std::collections::HashSet<String> = snapshot_a.tensors.keys().cloned().collect();
-        let names_b: std::collections::HashSet<String> = snapshot_b.tensors.keys().cloned().collect();
-        let mut missing = Vec::new();
-        for name in names_a.difference(&names_b) {
-            missing.push(format!("Only in A: {}", name));
-        }
-        for name in names_b.difference(&names_a) {
-            missing.push(format!("Only in B: {}", name));
-        }
-        missing
-    };
-    
-    if !missing_tensors.is_empty() {
-        eprintln!("Warning: {} tensors are not present in both models", missing_tensors.len());
-        for msg in &missing_tensors {
-            eprintln!("  {}", msg);
-        }
-    }
-    
-    let summary = compute_summary(&layers, total_params, missing_tensors);
+    let summary = compute_summary(&layers, missing_tensors);
 
     Ok(DiffResult {
-        model_a: Some(model_a_path.to_string_lossy().to_string()),
-        model_b: Some(model_b_path.to_string_lossy().to_string()),
+        model_a: model_a_path.to_string_lossy().into_owned(),
+        model_b: model_b_path.to_string_lossy().into_owned(),
         total_params,
         layers,
         summary,
@@ -78,10 +69,15 @@ fn compute_tensor_diff(
     snapshot_b: &crate::types::ModelSnapshot,
     name: &str,
 ) -> Result<TensorDiff> {
-    let meta_a = snapshot_a.tensors.get(name).unwrap();
-    let meta_b = snapshot_b.tensors.get(name).unwrap();
+    let meta_a = snapshot_a
+        .tensors
+        .get(name)
+        .with_context(|| format!("Tensor '{}' missing from snapshot A", name))?;
+    let meta_b = snapshot_b
+        .tensors
+        .get(name)
+        .with_context(|| format!("Tensor '{}' missing from snapshot B", name))?;
 
-    // Skip if shapes don't match
     if meta_a.shape != meta_b.shape {
         anyhow::bail!(
             "Shape mismatch for '{}': {:?} vs {:?}",
@@ -94,18 +90,11 @@ fn compute_tensor_diff(
     let data_a = load_tensor_data(snapshot_a, name)?;
     let data_b = load_tensor_data(snapshot_b, name)?;
 
-    let delta: Vec<f32> = data_a
-        .iter()
-        .zip(data_b.iter())
-        .map(|(a, b)| b - a)
-        .collect();
+    let delta: Vec<f32> = data_a.iter().zip(data_b.iter()).map(|(a, b)| b - a).collect();
 
     let l2_dist = l2_norm(&delta);
     let cos_sim = cosine_similarity(&data_a, &data_b);
-    let max_delta = delta
-        .iter()
-        .map(|d| d.abs())
-        .fold(0.0f32, f32::max);
+    let max_delta = delta.iter().map(|d| d.abs()).fold(0.0f32, f32::max);
     let mean_delta = delta.iter().sum::<f32>() / delta.len() as f32;
     let std_delta = std_dev(&delta);
 
@@ -130,9 +119,12 @@ fn std_dev(v: &[f32]) -> f32 {
     variance.sqrt()
 }
 
-fn compute_summary(layers: &[LayerDiff], _total_params: u64, _missing_tensors: Vec<String>) -> DiffSummary {
+fn compute_summary(layers: &[LayerDiff], missing_tensors: Vec<String>) -> DiffSummary {
     let total_layers = layers.len();
-    let changed_layers = layers.iter().filter(|l| l.tensors.iter().any(|t| t.changed)).count();
+    let changed_layers = layers
+        .iter()
+        .filter(|l| l.tensors.iter().any(|t| t.changed))
+        .count();
     let unchanged_layers = total_layers - changed_layers;
     let change_ratio = if total_layers > 0 {
         (changed_layers as f32 / total_layers as f32) * 100.0
@@ -140,33 +132,27 @@ fn compute_summary(layers: &[LayerDiff], _total_params: u64, _missing_tensors: V
         0.0
     };
 
-    let mean_delta = {
-        let all_tensor_l2: Vec<f32> = layers.iter()
-            .flat_map(|l| l.tensors.iter().map(|t| t.l2_distance))
-            .collect();
-        if !all_tensor_l2.is_empty() {
-            all_tensor_l2.iter().sum::<f32>() / all_tensor_l2.len() as f32
-        } else {
-            0.0
-        }
+    let all_l2: Vec<f32> = layers
+        .iter()
+        .flat_map(|l| l.tensors.iter().map(|t| t.l2_distance))
+        .collect();
+    let mean_delta = if !all_l2.is_empty() {
+        all_l2.iter().sum::<f32>() / all_l2.len() as f32
+    } else {
+        0.0
     };
 
-    let max_delta = layers
-        .iter()
-        .map(|l| l.aggregate_l2)
-        .fold(0.0f32, f32::max);
+    let max_delta = layers.iter().map(|l| l.aggregate_l2).fold(0.0f32, f32::max);
 
-    // Top 5 changed layers
     let mut top_indices: Vec<usize> = (0..layers.len()).collect();
-    top_indices.sort_by(|a, b| {
-        layers[*b]
+    top_indices.sort_by(|&a, &b| {
+        layers[b]
             .aggregate_l2
-            .partial_cmp(&layers[*a].aggregate_l2)
-            .unwrap()
+            .partial_cmp(&layers[a].aggregate_l2)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     let top_changed_indices = top_indices.into_iter().take(5).collect();
 
-    // Anomalies: z-score > 2.0
     let anomalies = layers
         .iter()
         .filter(|l| l.anomaly_score > 2.0)
@@ -187,5 +173,6 @@ fn compute_summary(layers: &[LayerDiff], _total_params: u64, _missing_tensors: V
         max_delta,
         top_changed_indices,
         anomalies,
+        missing_tensors,
     }
 }

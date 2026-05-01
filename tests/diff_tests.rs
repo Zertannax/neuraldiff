@@ -17,8 +17,8 @@ fn test_compute_diff_fixtures() {
     assert!(result.summary.max_delta > 0.1, "Expected significant max delta");
     
     // Should have model paths
-    assert!(result.model_a.is_some());
-    assert!(result.model_b.is_some());
+    assert!(!result.model_a.is_empty());
+    assert!(!result.model_b.is_empty());
 }
 
 #[test]

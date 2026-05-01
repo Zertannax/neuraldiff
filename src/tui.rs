@@ -247,8 +247,8 @@ fn draw_comparison_header(f: &mut Frame, state: &AppState, area: Rect) {
     ]));
 
     // Model A vs Model B
-    let model_a_name = diff.model_a.as_deref().unwrap_or("Model A");
-    let model_b_name = diff.model_b.as_deref().unwrap_or("Model B");
+    let model_a_name = diff.model_a.as_str();
+    let model_b_name = diff.model_b.as_str();
 
     lines.push(Line::from(vec![
         Span::styled("A: ", Style::default().fg(ACCENT)),
@@ -466,13 +466,9 @@ fn draw_detail_header(f: &mut Frame, state: &AppState, area: Rect) {
         Span::styled(" NEURALDIFF ", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
     ];
 
-    if let Some(ref a) = diff.model_a {
-        spans.push(Span::styled(truncate_path(a, 20), Style::default().fg(TEXT_SECONDARY)));
-    }
+    spans.push(Span::styled(truncate_path(&diff.model_a, 20), Style::default().fg(TEXT_SECONDARY)));
     spans.push(Span::styled(" → ", Style::default().fg(ACCENT)));
-    if let Some(ref b) = diff.model_b {
-        spans.push(Span::styled(truncate_path(b, 20), Style::default().fg(TEXT_SECONDARY)));
-    }
+    spans.push(Span::styled(truncate_path(&diff.model_b, 20), Style::default().fg(TEXT_SECONDARY)));
 
     let paragraph = Paragraph::new(Line::from(spans))
         .alignment(Alignment::Center)
@@ -567,9 +563,7 @@ fn draw_tensor_comparison(f: &mut Frame, state: &AppState, area: Rect) {
 
     // Get model names for title
     let title = if let Some(ref diff) = state.diff {
-        let a = diff.model_a.as_deref().unwrap_or("Model A");
-        let b = diff.model_b.as_deref().unwrap_or("Model B");
-        format!(" {} → {} ", truncate_path(a, 20), truncate_path(b, 20))
+        format!(" {} → {} ", truncate_path(&diff.model_a, 20), truncate_path(&diff.model_b, 20))
     } else {
         " Tensor Comparison ".to_string()
     };

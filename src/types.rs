@@ -1,12 +1,15 @@
+use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct ModelSnapshot {
     pub path: PathBuf,
     pub tensors: HashMap<String, TensorMeta>,
     pub total_params: u64,
+    pub mmap: Arc<Mmap>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,8 +85,8 @@ pub struct LayerDiff {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffResult {
-    pub model_a: Option<String>,
-    pub model_b: Option<String>,
+    pub model_a: String,
+    pub model_b: String,
     pub total_params: u64,
     pub layers: Vec<LayerDiff>,
     pub summary: DiffSummary,
@@ -99,6 +102,7 @@ pub struct DiffSummary {
     pub max_delta: f32,
     pub top_changed_indices: Vec<usize>,
     pub anomalies: Vec<AnomalyInfo>,
+    pub missing_tensors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

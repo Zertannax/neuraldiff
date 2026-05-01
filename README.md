@@ -73,8 +73,11 @@ neuraldiff diff base.safetensors finetuned.safetensors
 # JSON export
 neuraldiff diff base.safetensors finetuned.safetensors --json
 
-# Inspect a single model (placeholder)
+# Inspect a single model
 neuraldiff inspect model.safetensors
+
+# Scan and list all discovered models
+neuraldiff scan
 ```
 
 ### Keyboard Shortcuts
@@ -158,6 +161,14 @@ cargo clippy --all-targets --all-features
 
 # Format check
 cargo fmt --check
+```
+
+### Windows Build Note
+
+On Windows, debug builds may fail with PDB/linker errors due to disk space. Use sequential compilation:
+```bash
+cargo test --jobs 1
+cargo build --release --jobs 1
 ```
 
 ## License

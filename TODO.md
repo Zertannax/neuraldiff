@@ -1,6 +1,8 @@
-# NeuralDiff - TODO v0.1.1
+# NeuralDiff - TODO
 
-## Status: v0.1.0 RELEASED
+## Status: v0.1.1 COMPLETE — all items checked ✅
+
+---
 
 ---
 
@@ -54,10 +56,23 @@
 
 ---
 
+## SESSION 2026-05-01 — Corrections et ameliorations
+
+- [x] **Compilation** - 3 erreurs corrigees (loader.rs type, tui.rs borrow, Cargo.toml env-filter)
+- [x] **Commande scan** - Ajout de `neuraldiff scan` pour lister les modeles trouves
+- [x] **Scanner home** - Scan du repertoire home (depth 2) pour les git clone HuggingFace
+- [x] **TUI sensibilite** - Filtrage KeyEventKind::Press uniquement
+- [x] **Tests scanner** - 4 tests unitaires ajoutes dans scanner.rs
+- [x] **Git commit/push** - Commit `74cefcb` pousse sur master
+
+---
+
 ## BUGS CONNUS (a verifier)
 
 - [ ] **Terminal < 80 colonnes** - SPEC_TUI.md mentionne fallback, a implementer
 - [ ] **Fichiers > 2GB sur Windows** - Verifier memmap2 avec grands fichiers
+- [ ] **Format .gguf** - LM Studio / Ollama utilisent .gguf, pas .safetensors. Non supporte.
+- [ ] **Fichiers incomplets** - Erreur MetadataIncompleteBuffer si le safetensors est tronque
 
 ---
 
@@ -77,4 +92,4 @@
 
 ---
 
-> Derniere mise a jour : 2026-05-01
+> Derniere mise a jour : 2026-05-01 (session complete - push sur master)

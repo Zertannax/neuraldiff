@@ -3,8 +3,134 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+/// Fine-grained per-block component captured by the architecture regexes.
+/// This is the single source of truth for the regex-capture ↔ LayerType ↔
+/// display-suffix mapping. Adding a new variant forces every match below
+/// to be updated, so component types cannot drift across functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum LayerComponent {
+    LlamaSelfAttn,
+    LlamaMlp,
+    LlamaInputNorm,
+    LlamaPostAttnNorm,
+
+    Gpt2Attn,
+    Gpt2Mlp,
+    Gpt2Ln1,
+    Gpt2Ln2,
+
+    FalconSelfAttention,
+    FalconMlp,
+    FalconLnAttn,
+    FalconLnMlp,
+    FalconInputNorm,
+}
+
+impl LayerComponent {
+    fn from_llama_capture(s: &str) -> Option<Self> {
+        match s {
+            "self_attn" => Some(Self::LlamaSelfAttn),
+            "mlp" => Some(Self::LlamaMlp),
+            "input_layernorm" => Some(Self::LlamaInputNorm),
+            "post_attention_layernorm" => Some(Self::LlamaPostAttnNorm),
+            _ => None,
+        }
+    }
+
+    fn from_gpt2_capture(s: &str) -> Option<Self> {
+        match s {
+            "attn" => Some(Self::Gpt2Attn),
+            "mlp" => Some(Self::Gpt2Mlp),
+            "ln_1" => Some(Self::Gpt2Ln1),
+            "ln_2" => Some(Self::Gpt2Ln2),
+            _ => None,
+        }
+    }
+
+    fn from_falcon_capture(s: &str) -> Option<Self> {
+        match s {
+            "self_attention" => Some(Self::FalconSelfAttention),
+            "mlp" => Some(Self::FalconMlp),
+            "ln_attn" => Some(Self::FalconLnAttn),
+            "ln_mlp" => Some(Self::FalconLnMlp),
+            "input_layernorm" => Some(Self::FalconInputNorm),
+            _ => None,
+        }
+    }
+
+    /// Human-readable suffix used in `layer_name` (e.g. `layers.10.<suffix>`).
+    /// Distinct per variant to avoid the C2 collision where two components
+    /// previously collapsed onto the same `"norm"` suffix.
+    fn display_suffix(self) -> &'static str {
+        match self {
+            Self::LlamaSelfAttn => "attn",
+            Self::LlamaMlp => "mlp",
+            Self::LlamaInputNorm => "input_norm",
+            Self::LlamaPostAttnNorm => "post_attn_norm",
+
+            Self::Gpt2Attn => "attn",
+            Self::Gpt2Mlp => "mlp",
+            Self::Gpt2Ln1 => "ln_1",
+            Self::Gpt2Ln2 => "ln_2",
+
+            Self::FalconSelfAttention => "attn",
+            Self::FalconMlp => "mlp",
+            Self::FalconLnAttn => "ln_attn",
+            Self::FalconLnMlp => "ln_mlp",
+            Self::FalconInputNorm => "input_norm",
+        }
+    }
+
+    /// Coarse-grained roll-up exposed via the public `LayerType`.
+    /// Exhaustive match — fixes C3 (no silent fallback to "norm").
+    fn layer_type(self) -> LayerType {
+        match self {
+            Self::LlamaSelfAttn | Self::Gpt2Attn | Self::FalconSelfAttention => {
+                LayerType::Attention
+            }
+            Self::LlamaMlp | Self::Gpt2Mlp | Self::FalconMlp => LayerType::MLP,
+            Self::LlamaInputNorm
+            | Self::LlamaPostAttnNorm
+            | Self::Gpt2Ln1
+            | Self::Gpt2Ln2
+            | Self::FalconLnAttn
+            | Self::FalconLnMlp
+            | Self::FalconInputNorm => LayerType::Norm,
+        }
+    }
+}
+
+/// Typed HashMap key for layer grouping. Replaces the previous string round-trip
+/// (extract -> "layer_10_norm" -> reparse) which lost information.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum LayerKey {
+    Block { index: usize, component: LayerComponent },
+    Embedding,
+    Head,
+    FinalNorm,
+    /// Catch-all for tensors no architecture regex matched. Keeps the original
+    /// path prefix so distinct unknowns don't collapse together.
+    Other(String),
+}
+
+impl LayerKey {
+    fn into_descriptor(self) -> (Option<usize>, LayerType, String) {
+        match self {
+            LayerKey::Block { index, component } => (
+                Some(index),
+                component.layer_type(),
+                format!("layers.{}.{}", index, component.display_suffix()),
+            ),
+            LayerKey::Embedding => (None, LayerType::Embedding, "embed_tokens".to_string()),
+            LayerKey::Head => (None, LayerType::Head, "lm_head".to_string()),
+            LayerKey::FinalNorm => (None, LayerType::Norm, "norm".to_string()),
+            LayerKey::Other(s) => (None, LayerType::Other, s),
+        }
+    }
+}
+
 pub fn map_layers(tensor_diffs: &[TensorDiff]) -> Vec<LayerDiff> {
-    let mut layer_groups: HashMap<String, Vec<&TensorDiff>> = HashMap::new();
+    let mut layer_groups: HashMap<LayerKey, Vec<&TensorDiff>> = HashMap::new();
 
     for diff in tensor_diffs {
         let layer_key = extract_layer_key(&diff.name);
@@ -14,7 +140,7 @@ pub fn map_layers(tensor_diffs: &[TensorDiff]) -> Vec<LayerDiff> {
     let mut layers: Vec<LayerDiff> = layer_groups
         .into_iter()
         .map(|(key, diffs)| {
-            let (layer_index, layer_type, layer_name) = parse_layer_key(&key);
+            let (layer_index, layer_type, layer_name) = key.into_descriptor();
 
             let aggregate_l2 = {
                 let (weighted_sum, total_params) = diffs
@@ -44,11 +170,14 @@ pub fn map_layers(tensor_diffs: &[TensorDiff]) -> Vec<LayerDiff> {
         })
         .collect();
 
+    // Tie-break by layer_name so the order between distinct components at the
+    // same index (e.g. layers.10.input_norm vs layers.10.post_attn_norm) is
+    // deterministic across runs — HashMap iteration order otherwise leaks.
     layers.sort_by(|a, b| match (a.layer_index, b.layer_index) {
-        (Some(ai), Some(bi)) => ai.cmp(&bi),
+        (Some(ai), Some(bi)) => ai.cmp(&bi).then_with(|| a.layer_name.cmp(&b.layer_name)),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
+        (None, None) => a.layer_name.cmp(&b.layer_name),
     });
 
     if !layers.is_empty() {
@@ -68,13 +197,6 @@ pub fn map_layers(tensor_diffs: &[TensorDiff]) -> Vec<LayerDiff> {
     layers
 }
 
-fn component_short(raw: &str, attn_names: &[&str], mlp_names: &[&str]) -> &'static str {
-    if attn_names.contains(&raw) { "attn" }
-    else if mlp_names.contains(&raw) { "mlp" }
-    else { "norm" }
-}
-
-// Compiled regex patterns — initialized once, reused for every tensor name.
 fn re_llama() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -87,9 +209,7 @@ fn re_llama() -> &'static Regex {
 
 fn re_gpt2() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^transformer\.h\.(\d+)\.(attn|mlp|ln_1|ln_2)").unwrap()
-    })
+    RE.get_or_init(|| Regex::new(r"^transformer\.h\.(\d+)\.(attn|mlp|ln_1|ln_2)").unwrap())
 }
 
 fn re_falcon() -> &'static Regex {
@@ -102,71 +222,44 @@ fn re_falcon() -> &'static Regex {
     })
 }
 
-fn extract_layer_key(name: &str) -> String {
-    // LLaMA / Qwen style: model.layers.N.{self_attn,mlp,layernorm}
-    if let Some(caps) = re_llama().captures(name) {
-        let num = caps[1].to_string();
-        let comp = component_short(&caps[2], &["self_attn"], &["mlp"]);
-        return format!("layer_{}_{}", num, comp);
+fn extract_layer_key(name: &str) -> LayerKey {
+    if let Some(caps) = re_llama().captures(name)
+        && let Ok(index) = caps[1].parse::<usize>()
+        && let Some(component) = LayerComponent::from_llama_capture(&caps[2])
+    {
+        return LayerKey::Block { index, component };
     }
 
-    // GPT-2 style: transformer.h.N.{attn,mlp,ln_1,ln_2}
-    if let Some(caps) = re_gpt2().captures(name) {
-        let num = caps[1].to_string();
-        let comp = component_short(&caps[2], &["attn"], &["mlp"]);
-        return format!("layer_{}_{}", num, comp);
+    if let Some(caps) = re_gpt2().captures(name)
+        && let Ok(index) = caps[1].parse::<usize>()
+        && let Some(component) = LayerComponent::from_gpt2_capture(&caps[2])
+    {
+        return LayerKey::Block { index, component };
     }
 
-    // Falcon style: transformer.h.N.{self_attention,mlp,ln_*}
-    if let Some(caps) = re_falcon().captures(name) {
-        let num = caps[1].to_string();
-        let comp = component_short(&caps[2], &["self_attention"], &["mlp"]);
-        return format!("layer_{}_{}", num, comp);
+    if let Some(caps) = re_falcon().captures(name)
+        && let Ok(index) = caps[1].parse::<usize>()
+        && let Some(component) = LayerComponent::from_falcon_capture(&caps[2])
+    {
+        return LayerKey::Block { index, component };
     }
 
     if name.contains("embed_tokens") || name.contains("embed") {
-        return "embedding".to_string();
+        return LayerKey::Embedding;
     }
 
     if name.contains("lm_head") || name.contains("head") {
-        return "head".to_string();
+        return LayerKey::Head;
     }
 
     if name.contains("model.norm") || name.contains("final_layernorm") {
-        return "final_norm".to_string();
+        return LayerKey::FinalNorm;
     }
 
     let parts: Vec<&str> = name.split('.').collect();
-    if parts.len() >= 2 {
+    LayerKey::Other(if parts.len() >= 2 {
         format!("{}.{}", parts[0], parts[1])
     } else {
         name.to_string()
-    }
-}
-
-fn parse_layer_key(key: &str) -> (Option<usize>, LayerType, String) {
-    match key {
-        "embedding" => return (None, LayerType::Embedding, "embed_tokens".to_string()),
-        "head" => return (None, LayerType::Head, "lm_head".to_string()),
-        "final_norm" => return (None, LayerType::Norm, "norm".to_string()),
-        _ => {}
-    }
-
-    if key.starts_with("layer_") {
-        let parts: Vec<&str> = key.splitn(3, '_').collect();
-        if parts.len() == 3 {
-            if let Ok(index) = parts[1].parse::<usize>() {
-                let layer_type = match parts[2] {
-                    "attn" => LayerType::Attention,
-                    "mlp" => LayerType::MLP,
-                    "norm" => LayerType::Norm,
-                    _ => LayerType::Other,
-                };
-                let name = format!("layers.{}.{}", index, parts[2]);
-                return (Some(index), layer_type, name);
-            }
-        }
-    }
-
-    (None, LayerType::Other, key.to_string())
+    })
 }

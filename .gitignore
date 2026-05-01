@@ -1,1 +1,32 @@
-/target
+# Rust
+/target/
+**/*.rs.bk
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Default export paths
+/diff.json
+/diff.csv
+
+# Local dev scripts (often contain absolute paths to local checkpoints)
+/run-*.sh
+
+# Logs / scratch
+*.log
+/tmp/
+/scratch/
+
+# Python / venv (in case anyone vendors comparison scripts)
+__pycache__/
+.venv/
+venv/
+
+# OS junk
+desktop.ini

@@ -285,10 +285,12 @@ fn compute_heatmap(state: &AppState) -> Option<HeatmapData> {
 
     let deltas: Vec<f32> = data_a.iter().zip(data_b.iter()).map(|(a, b)| (b - a).abs()).collect();
 
-    // Determine 2D display dimensions (max 64 cols × 20 rows)
+    // Determine 2D display dimensions. Half-block rendering lets us pack
+    // 2 logical rows into 1 terminal line, so we sample 40 rows for a
+    // ~20-line render area.
     let (src_rows, src_cols) = tensor_2d_shape(&shape);
     let max_cols: usize = 64;
-    let max_rows: usize = 20;
+    let max_rows: usize = 40;
     let dst_cols = src_cols.min(max_cols);
     let dst_rows = src_rows.min(max_rows);
 
@@ -887,62 +889,131 @@ fn draw_heatmap(f: &mut Frame, state: &AppState, area: Rect) {
     };
 
     let range = heatmap.max - heatmap.min;
+
+    // Stats over the grid for the info bar.
+    let n = heatmap.grid.len() as f32;
+    let mean = if n > 0.0 { heatmap.grid.iter().sum::<f32>() / n } else { 0.0 };
+    let p50 = percentile(&heatmap.grid, 0.50);
+    let p95 = percentile(&heatmap.grid, 0.95);
+
     let mut lines = vec![];
 
+    // Header — tensor name + nice typography
     lines.push(Line::from(vec![
-        Span::styled("Tensor: ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled(&heatmap.tensor_name, Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+        Span::styled("Tensor  ", Style::default().fg(TEXT_DIM)),
+        Span::styled(truncate_str(&heatmap.tensor_name, 60), Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("Grid: {}×{}  ", heatmap.rows, heatmap.cols), Style::default().fg(TEXT_SECONDARY)),
-        Span::styled(format!("min={:.4}  max={:.4}", heatmap.min, heatmap.max), Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("  [Enter/b] Back", Style::default().fg(TEXT_SECONDARY)),
-    ]));
-    lines.push(Line::from(""));
-
-    // Color scale legend — 5 distinct glyphs so the bands are visible
-    // even on monochrome / colorblind / piped screenshots.
-    lines.push(Line::from(vec![
-        Span::styled("Scale  ", Style::default().fg(TEXT_DIM)),
-        Span::styled("· ", Style::default().fg(GREEN)),
-        Span::styled("none  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("░ ", Style::default().fg(GREEN)),
-        Span::styled("low  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("▒ ", Style::default().fg(YELLOW)),
-        Span::styled("med  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("▓ ", Style::default().fg(ORANGE)),
-        Span::styled("high  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("█ ", Style::default().fg(RED)),
-        Span::styled("max", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("Grid  ", Style::default().fg(TEXT_DIM)),
+        Span::styled(format!("{}×{}", heatmap.rows, heatmap.cols), Style::default().fg(TEXT_PRIMARY)),
+        Span::styled("    min  ", Style::default().fg(TEXT_DIM)),
+        Span::styled(format!("{:.4}", heatmap.min), Style::default().fg(GREEN)),
+        Span::styled("    p50  ", Style::default().fg(TEXT_DIM)),
+        Span::styled(format!("{:.4}", p50), Style::default().fg(TEXT_PRIMARY)),
+        Span::styled("    mean  ", Style::default().fg(TEXT_DIM)),
+        Span::styled(format!("{:.4}", mean), Style::default().fg(TEXT_PRIMARY)),
+        Span::styled("    p95  ", Style::default().fg(TEXT_DIM)),
+        Span::styled(format!("{:.4}", p95), Style::default().fg(ORANGE)),
+        Span::styled("    max  ", Style::default().fg(TEXT_DIM)),
+        Span::styled(format!("{:.4}", heatmap.max), Style::default().fg(RED)),
     ]));
     lines.push(Line::from(""));
 
-    for row in 0..heatmap.rows {
+    // Color scale — half-block gradient for ramp, glyph fallback shown below
+    let mut scale = vec![Span::styled("Scale  ", Style::default().fg(TEXT_DIM))];
+    let ramp_colors = [
+        Color::Rgb(34, 197, 94),   // green
+        Color::Rgb(132, 204, 22),
+        Color::Rgb(234, 179, 8),   // yellow
+        Color::Rgb(249, 115, 22),  // orange
+        Color::Rgb(239, 68, 68),   // red
+    ];
+    for c in &ramp_colors {
+        scale.push(Span::styled("█", Style::default().fg(*c)));
+    }
+    scale.push(Span::styled("  ", Style::default()));
+    scale.push(Span::styled(format!("{:.4}", heatmap.min), Style::default().fg(TEXT_SECONDARY)));
+    scale.push(Span::styled(" → ", Style::default().fg(TEXT_DIM)));
+    scale.push(Span::styled(format!("{:.4}", heatmap.max), Style::default().fg(TEXT_SECONDARY)));
+    lines.push(Line::from(scale));
+    lines.push(Line::from(""));
+
+    // The grid itself — paired rows rendered as half-blocks (▀) with
+    // upper half = even row, lower half = odd row. Doubles vertical
+    // resolution within the same number of terminal lines.
+    let normalize = |v: f32| -> f32 {
+        if range > 1e-9 { ((v - heatmap.min) / range).clamp(0.0, 1.0) } else { 0.0 }
+    };
+
+    let mut row = 0;
+    while row < heatmap.rows {
         let mut spans = vec![];
         for col in 0..heatmap.cols {
-            let val = heatmap.grid[row * heatmap.cols + col];
-            let norm = if range > 1e-9 { (val - heatmap.min) / range } else { 0.0 };
-            let (ch, color) = heatmap_cell(norm);
-            spans.push(Span::styled(ch, Style::default().fg(color)));
+            let top = heatmap.grid[row * heatmap.cols + col];
+            let bot = if row + 1 < heatmap.rows {
+                heatmap.grid[(row + 1) * heatmap.cols + col]
+            } else {
+                heatmap.min
+            };
+            let top_color = ramp_color(normalize(top));
+            let bot_color = ramp_color(normalize(bot));
+            // ▀ paints fg on upper half, bg on lower half.
+            spans.push(Span::styled("▀", Style::default().fg(top_color).bg(bot_color)));
         }
         lines.push(Line::from(spans));
+        row += 2;
     }
 
     f.render_widget(
         Paragraph::new(Text::from(lines))
-            .block(Block::default().title(" Δ Heatmap (absolute delta) ").borders(Borders::ALL).border_style(Style::default().fg(ACCENT)).style(Style::default().bg(SURFACE))),
+            .block(
+                Block::default()
+                    .title(" Δ Heatmap — absolute delta per weight ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(ACCENT))
+                    .style(Style::default().bg(SURFACE)),
+            ),
         chunks[1],
     );
 }
 
-fn heatmap_cell(norm: f32) -> (&'static str, Color) {
-    match norm {
-        n if n < 0.10 => ("·", GREEN),   // very low — distinct dot, not a block
-        n if n < 0.30 => ("░", GREEN),
-        n if n < 0.55 => ("▒", YELLOW),
-        n if n < 0.80 => ("▓", ORANGE),
-        _ => ("█", RED),
+/// Map a normalized value [0,1] to a smooth red-yellow-green gradient.
+fn ramp_color(norm: f32) -> Color {
+    // Five anchor stops; lerp between them.
+    let stops: [(f32, (u8, u8, u8)); 5] = [
+        (0.00, (34, 197, 94)),    // green
+        (0.25, (132, 204, 22)),   // lime
+        (0.50, (234, 179, 8)),    // yellow
+        (0.75, (249, 115, 22)),   // orange
+        (1.00, (239, 68, 68)),    // red
+    ];
+    let n = norm.clamp(0.0, 1.0);
+    for w in stops.windows(2) {
+        let (a, ca) = w[0];
+        let (b, cb) = w[1];
+        if n <= b {
+            let t = if (b - a).abs() < 1e-6 { 0.0 } else { (n - a) / (b - a) };
+            let r = (ca.0 as f32 + (cb.0 as f32 - ca.0 as f32) * t) as u8;
+            let g = (ca.1 as f32 + (cb.1 as f32 - ca.1 as f32) * t) as u8;
+            let b_ = (ca.2 as f32 + (cb.2 as f32 - ca.2 as f32) * t) as u8;
+            return Color::Rgb(r, g, b_);
+        }
     }
+    Color::Rgb(stops[stops.len() - 1].1 .0, stops[stops.len() - 1].1 .1, stops[stops.len() - 1].1 .2)
+}
+
+/// Percentile via a copy + nth_element. Cheap on heatmap-sized grids (≤1280 cells).
+fn percentile(data: &[f32], pct: f32) -> f32 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut v: Vec<f32> = data.iter().filter(|x| x.is_finite()).copied().collect();
+    if v.is_empty() {
+        return 0.0;
+    }
+    let idx = ((pct.clamp(0.0, 1.0)) * (v.len() - 1) as f32).round() as usize;
+    let (_, kth, _) = v.select_nth_unstable_by(idx, |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    *kth
 }
 
 // ============================================
@@ -951,65 +1022,77 @@ fn heatmap_cell(norm: f32) -> (&'static str, Color) {
 
 fn draw_footer(f: &mut Frame, state: &AppState, area: Rect) {
     let heatmap_hint = if state.view_mode == ViewMode::Detail && state.show_heatmap {
-        "Enter/b Exit heatmap"
+        "exit heatmap"
     } else if state.view_mode == ViewMode::Detail {
-        "Enter Heatmap"
+        "heatmap"
     } else {
-        "Enter Explore"
+        "explore"
     };
 
-    let sep = || Span::styled("  ·  ", Style::default().fg(TEXT_DIM));
-
-    fn binding(k: &str, label: &str) -> Vec<Span<'static>> {
+    // Sober keybinding: dim bracket key + light label. No vivid pills —
+    // the eye should not bounce between every keybinding.
+    fn key(k: &str, label: &str) -> Vec<Span<'static>> {
         vec![
-            Span::styled(format!(" {} ", k), Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {}", label), Style::default().fg(TEXT_PRIMARY)),
+            Span::styled(k.to_string(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {}", label), Style::default().fg(TEXT_SECONDARY)),
         ]
     }
+    let sep = || Span::styled("   ", Style::default());
 
     let type_filter_active = state.layer_type_filter != LayerTypeFilter::All;
     let filter_active = state.filter_mode == FilterMode::ChangedOnly;
 
-    // Row 1 — primary keybindings, color-coded by category
+    // Row 1 — navigation + universal keys (always sober)
     let mut row1 = vec![];
-    row1.extend(binding("↑↓", "Layer"));
+    row1.extend(key("↑↓", "layer"));
     row1.push(sep());
-    row1.extend(binding("←→", "Tensor"));
+    row1.extend(key("←→", "tensor"));
     row1.push(sep());
-    row1.extend(binding("Enter", heatmap_hint.trim_start_matches("Enter ")));
+    row1.extend(key("⏎", heatmap_hint));
     row1.push(sep());
-    row1.extend(binding("b", "Back"));
+    row1.extend(key("b", "back"));
     row1.push(sep());
-    row1.extend(binding("?", "Help"));
+    row1.extend(key("?", "help"));
     row1.push(sep());
-    row1.extend(binding("q", "Quit"));
+    row1.extend(key("q", "quit"));
 
-    // Row 2 — view-state keys, with active filters highlighted
+    // Row 2 — view-state. Only the *value* of an active filter gets a
+    // colored chip; inactive filters look identical to passive keys.
+    fn state_key(k: &str, value: &str, active: bool) -> Vec<Span<'static>> {
+        let value_style = if active {
+            Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT_PRIMARY)
+        };
+        vec![
+            Span::styled(k.to_string(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!(" {} ", value), value_style),
+        ]
+    }
+
+    let sort_label = match state.sort_mode {
+        SortMode::L2Desc => "L2 desc",
+        SortMode::LayerIndex => "by index",
+        SortMode::AnomalyScore => "by anomaly",
+    };
+
     let mut row2 = vec![];
-    row2.extend(binding("s", match state.sort_mode {
-        SortMode::L2Desc => "Sort: L2↓",
-        SortMode::LayerIndex => "Sort: Index",
-        SortMode::AnomalyScore => "Sort: Anom",
-    }));
+    row2.extend(state_key("s", sort_label, false));
     row2.push(sep());
-    row2.push(Span::styled(" f ", Style::default().fg(BG).bg(if filter_active { ACCENT } else { TEXT_DIM }).add_modifier(Modifier::BOLD)));
-    row2.push(Span::styled(format!(" {}", if filter_active { "Changed only" } else { "All layers" }),
-        Style::default().fg(if filter_active { ACCENT } else { TEXT_SECONDARY })));
+    row2.extend(state_key("f", if filter_active { "changed only" } else { "all layers" }, filter_active));
     row2.push(sep());
-    row2.push(Span::styled(" t ", Style::default().fg(BG).bg(if type_filter_active { ACCENT } else { TEXT_DIM }).add_modifier(Modifier::BOLD)));
-    row2.push(Span::styled(format!(" Type: {}", state.layer_type_filter.label()),
-        Style::default().fg(if type_filter_active { ACCENT } else { TEXT_SECONDARY })));
+    row2.extend(state_key("t", state.layer_type_filter.label(), type_filter_active));
     row2.push(sep());
-    row2.extend(binding("J", "Export JSON"));
+    row2.extend(key("J", "export json"));
     row2.push(sep());
-    row2.extend(binding("C", "Export CSV"));
+    row2.extend(key("C", "export csv"));
 
-    // Row 3 (if a status message is present) — surface it inline.
     let mut lines = vec![Line::from(row1), Line::from(row2)];
     if let Some(ref msg) = state.status_message {
         lines.push(Line::from(vec![
-            Span::styled(" ✓ ", Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {}", msg), Style::default().fg(ACCENT)),
+            Span::styled("✓ ", Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled(msg.clone(), Style::default().fg(TEXT_PRIMARY)),
         ]));
     }
 

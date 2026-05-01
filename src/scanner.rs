@@ -22,6 +22,15 @@ pub fn scan_for_models() -> Result<Vec<ModelInfo>> {
     Ok(models)
 }
 
+/// Scan a single directory tree for .safetensors files. Used by `scan --root`.
+pub fn scan_in_root(root: &Path, max_depth: usize) -> Result<Vec<ModelInfo>> {
+    let mut models = Vec::new();
+    let mut seen = HashSet::new();
+    scan_dir_recursive(root, 0, max_depth, &mut seen, &mut models);
+    models.sort_by(|a, b| b.size_mb.partial_cmp(&a.size_mb).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(models)
+}
+
 fn scan_dir_recursive(
     dir: &Path,
     depth: usize,

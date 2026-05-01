@@ -1,6 +1,8 @@
 pub mod types;
 pub mod scanner;
 
+pub mod terminal;
+
 #[cfg(feature = "tui")]
 pub mod tui;
 

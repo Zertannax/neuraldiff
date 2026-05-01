@@ -130,11 +130,8 @@ pub fn format_size(size_mb: f64) -> String {
 }
 
 // Model Selection UI
+use crate::terminal::TerminalGuard;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -182,17 +179,9 @@ impl ModelSelectionState {
 }
 
 pub fn run_model_selection() -> Result<(Option<PathBuf>, Option<PathBuf>)> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
+    let mut terminal = TerminalGuard::new()?;
     let mut state = ModelSelectionState::new()?;
     let result = run_selection_loop(&mut terminal, &mut state);
-
-    disable_raw_mode()?;
-    terminal.backend_mut().execute(LeaveAlternateScreen)?;
 
     match result {
         Ok(true) => Ok((

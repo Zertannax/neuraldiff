@@ -1,10 +1,7 @@
+use crate::terminal::TerminalGuard;
 use crate::types::{AppState, FilterMode, HeatmapData, LayerDiff, LayerType, LayerTypeFilter, Severity, SortMode, ViewMode};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -39,16 +36,14 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 /// Run the TUI with a pre-computed diff result.
 pub fn run_app(mut state: AppState) -> Result<()> {
-    let mut terminal = setup_terminal()?;
-    let res = run_main_loop(&mut terminal, &mut state);
-    restore_terminal(&mut terminal)?;
-    res
+    let mut terminal = TerminalGuard::new()?;
+    run_main_loop(&mut terminal, &mut state)
 }
 
 /// Show a loading screen while computing the diff in a background thread,
 /// then transition directly into the main TUI.
 pub fn run_with_loading(path_a: &Path, path_b: &Path) -> Result<()> {
-    let mut terminal = setup_terminal()?;
+    let mut terminal = TerminalGuard::new()?;
 
     let path_a_buf = path_a.to_path_buf();
     let path_b_buf = path_b.to_path_buf();
@@ -65,7 +60,6 @@ pub fn run_with_loading(path_a: &Path, path_b: &Path) -> Result<()> {
     let tick = Duration::from_millis(80);
     let start = Instant::now();
 
-    // Loading loop
     let diff_result = loop {
         terminal.draw(|f| {
             draw_loading(f, &display_a, &display_b, SPINNER[frame_idx % 10], start.elapsed().as_secs_f64())
@@ -76,7 +70,6 @@ pub fn run_with_loading(path_a: &Path, path_b: &Path) -> Result<()> {
             Ok(result) => break result,
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
-                restore_terminal(&mut terminal)?;
                 anyhow::bail!("Diff computation thread panicked");
             }
         }
@@ -87,7 +80,6 @@ pub fn run_with_loading(path_a: &Path, path_b: &Path) -> Result<()> {
                     || (key.modifiers == KeyModifiers::CONTROL
                         && key.code == KeyCode::Char('c'));
                 if quit {
-                    restore_terminal(&mut terminal)?;
                     return Ok(());
                 }
             }
@@ -98,22 +90,7 @@ pub fn run_with_loading(path_a: &Path, path_b: &Path) -> Result<()> {
     let mut state = AppState::default();
     state.diff = Some(diff);
 
-    let res = run_main_loop(&mut terminal, &mut state);
-    restore_terminal(&mut terminal)?;
-    res
-}
-
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-    Ok(Terminal::new(CrosstermBackend::new(stdout))?)
-}
-
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-    disable_raw_mode()?;
-    terminal.backend_mut().execute(LeaveAlternateScreen)?;
-    Ok(())
+    run_main_loop(&mut terminal, &mut state)
 }
 
 fn run_main_loop(

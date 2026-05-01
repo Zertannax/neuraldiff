@@ -10,9 +10,9 @@
 
 - [x] **Heatmap** - draw_heatmap: grille downsampleée avec palette ░▒▓█ et couleurs GREEN→RED, chargement à la demande
 - [x] **Inspect** - Affiche nom, shape, dtype, param count de tous les tenseurs
-- [ ] **Filtre par type** - Ajouter filtre pour n'afficher que les couches de type specifique (attn/mlp/norm/embed)
+- [x] **Filtre par type** - Touche [t] cycle All→Attn→MLP→Norm→Embed→Head→Other, affiché dans le titre du panel et le footer
 - [x] **Barre de progression** - Loading screen animé (spinner braille + elapsed) via run_with_loading
-- [ ] **Export CSV** - Ajouter touche `[C]` pour exporter en CSV en plus du JSON
+- [x] **Export CSV** - Touche [C] exporte diff.csv avec layer_name, tensor_name, shape, l2, cosine, max_delta, mean_delta, std_delta, changed
 
 ### Corrections
 

@@ -1,4 +1,4 @@
-use crate::types::{AppState, FilterMode, HeatmapData, LayerDiff, Severity, SortMode, ViewMode};
+use crate::types::{AppState, FilterMode, HeatmapData, LayerDiff, LayerType, LayerTypeFilter, Severity, SortMode, ViewMode};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{
@@ -251,6 +251,19 @@ fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
                 }
             }
         }
+        KeyCode::Char('t') => {
+            state.layer_type_filter = state.layer_type_filter.next();
+            state.selected_layer = 0;
+            state.selected_tensor = 0;
+            state.show_heatmap = false;
+            state.heatmap_data = None;
+        }
+        KeyCode::Char('C') => {
+            match export_csv(state) {
+                Ok(path) => state.status_message = Some(format!("Exported to {}", path)),
+                Err(e) => state.status_message = Some(format!("CSV export failed: {}", e)),
+            }
+        }
         _ => {}
     }
     false
@@ -358,6 +371,19 @@ fn get_filtered_layers(state: &AppState) -> Vec<&LayerDiff> {
 
     if state.filter_mode == FilterMode::ChangedOnly {
         layers.retain(|l| l.aggregate_l2 > 1e-6);
+    }
+
+    if state.layer_type_filter != LayerTypeFilter::All {
+        let wanted = match state.layer_type_filter {
+            LayerTypeFilter::Attention => LayerType::Attention,
+            LayerTypeFilter::MLP       => LayerType::MLP,
+            LayerTypeFilter::Norm      => LayerType::Norm,
+            LayerTypeFilter::Embedding => LayerType::Embedding,
+            LayerTypeFilter::Head      => LayerType::Head,
+            LayerTypeFilter::Other     => LayerType::Other,
+            LayerTypeFilter::All       => unreachable!(),
+        };
+        layers.retain(|l| l.layer_type == wanted);
     }
 
     match state.sort_mode {
@@ -706,11 +732,16 @@ fn draw_layer_list(f: &mut Frame, state: &AppState, area: Rect) {
         ]));
     }
 
-    let title = format!(" Layers [{}] ", match state.sort_mode {
+    let type_tag = if state.layer_type_filter == LayerTypeFilter::All {
+        String::new()
+    } else {
+        format!(" · {}", state.layer_type_filter.label())
+    };
+    let title = format!(" Layers [{}{}] ", match state.sort_mode {
         SortMode::L2Desc => "L2↓",
         SortMode::LayerIndex => "Idx",
         SortMode::AnomalyScore => "Anom",
-    });
+    }, type_tag);
 
     f.render_widget(
         Paragraph::new(Text::from(lines))
@@ -913,14 +944,19 @@ fn draw_footer(f: &mut Frame, state: &AppState, area: Rect) {
         "[Enter] Explore  "
     };
 
+    let type_label = format!("[t] Type:{:<5}  ", state.layer_type_filter.label());
     let mut spans = vec![
         Span::styled("[↑↓/jk] Navigate  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[←→/hl] Tensor  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled(heatmap_hint, Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[b] Back  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[s] Sort  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("[f] Filter  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("[f] Changed  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled(type_label, Style::default().fg(
+            if state.layer_type_filter == LayerTypeFilter::All { TEXT_SECONDARY } else { ACCENT }
+        )),
         Span::styled("[J] JSON  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("[C] CSV  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[?] Help  ", Style::default().fg(TEXT_SECONDARY)),
         Span::styled("[q] Quit", Style::default().fg(TEXT_SECONDARY)),
     ];
@@ -952,7 +988,9 @@ fn draw_help(f: &mut Frame, area: Rect) {
         Line::from("Commands:"),
         Line::from("  s      Cycle sort (L2↓ → Index → Anomaly)"),
         Line::from("  f      Toggle filter (All ↔ Changed only)"),
+        Line::from("  t      Cycle layer type filter (All → Attn → MLP → Norm → Embed → Head → Other)"),
         Line::from("  J      Export full diff to diff.json"),
+        Line::from("  C      Export tensor-level diff to diff.csv"),
         Line::from("  ?      Toggle this help"),
         Line::from("  q      Quit"),
         Line::from(""),
@@ -970,6 +1008,55 @@ fn draw_help(f: &mut Frame, area: Rect) {
             .block(Block::default().title(" Help ").borders(Borders::ALL).border_style(Style::default().fg(ACCENT)).style(Style::default().bg(SURFACE))),
         popup,
     );
+}
+
+// ============================================
+// CSV export
+// ============================================
+
+fn export_csv(state: &AppState) -> Result<String> {
+    let diff = match state.diff {
+        Some(ref d) => d,
+        None => anyhow::bail!("No diff data to export"),
+    };
+
+    let path = "diff.csv";
+    let mut out = String::from(
+        "layer_name,layer_type,layer_index,tensor_name,shape,\
+         l2_distance,cosine_similarity,max_delta,mean_delta,std_delta,changed\n",
+    );
+
+    for layer in &diff.layers {
+        let idx = layer.layer_index.map_or("".to_string(), |i| i.to_string());
+        for tensor in &layer.tensors {
+            let shape = tensor.shape.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("x");
+            out.push_str(&format!(
+                "{},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{}\n",
+                csv_escape(&layer.layer_name),
+                layer.layer_type,
+                idx,
+                csv_escape(&tensor.name),
+                shape,
+                tensor.l2_distance,
+                tensor.cosine_similarity,
+                tensor.max_delta,
+                tensor.mean_delta,
+                tensor.std_delta,
+                tensor.changed,
+            ));
+        }
+    }
+
+    std::fs::write(path, out)?;
+    Ok(path.to_string())
+}
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
 }
 
 // ============================================

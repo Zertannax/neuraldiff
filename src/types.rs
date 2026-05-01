@@ -187,6 +187,7 @@ pub struct AppState {
     pub heatmap_data: Option<HeatmapData>,
     pub sort_mode: SortMode,
     pub filter_mode: FilterMode,
+    pub layer_type_filter: LayerTypeFilter,
     pub show_help: bool,
     pub status_message: Option<String>,
     pub progress: Option<ProgressState>,
@@ -198,6 +199,37 @@ pub enum SortMode { L2Desc, LayerIndex, AnomalyScore }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterMode { All, ChangedOnly }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerTypeFilter {
+    All, Attention, MLP, Norm, Embedding, Head, Other,
+}
+
+impl LayerTypeFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All       => "All",
+            Self::Attention => "Attn",
+            Self::MLP       => "MLP",
+            Self::Norm      => "Norm",
+            Self::Embedding => "Embed",
+            Self::Head      => "Head",
+            Self::Other     => "Other",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::All       => Self::Attention,
+            Self::Attention => Self::MLP,
+            Self::MLP       => Self::Norm,
+            Self::Norm      => Self::Embedding,
+            Self::Embedding => Self::Head,
+            Self::Head      => Self::Other,
+            Self::Other     => Self::All,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode { Summary, Detail }
@@ -212,6 +244,7 @@ impl Default for AppState {
             heatmap_data: None,
             sort_mode: SortMode::L2Desc,
             filter_mode: FilterMode::All,
+            layer_type_filter: LayerTypeFilter::All,
             show_help: false,
             status_message: None,
             progress: None,

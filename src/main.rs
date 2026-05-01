@@ -10,14 +10,23 @@ use neuraldiff::tui;
 use neuraldiff::scanner;
 
 fn main() -> Result<()> {
+    // Log to stderr so --json output stays clean on stdout.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_max_level(tracing::Level::WARN)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     let cli = Cli::parse();
 
-    match cli.command {
+    // No subcommand → behave like `diff` without args (interactive scan + pick).
+    let command = cli.command.unwrap_or(Commands::Diff {
+        model_a: None,
+        model_b: None,
+        json: false,
+    });
+
+    match command {
         Commands::Diff { model_a, model_b, json } => {
             let (path_a, path_b) = match (model_a, model_b) {
                 (Some(a), Some(b)) => (a, b),
@@ -28,14 +37,14 @@ fn main() -> Result<()> {
                         match (a, b) {
                             (Some(pa), Some(pb)) => (pa, pb),
                             _ => {
-                                println!("No models selected. Exiting.");
+                                eprintln!("No models selected. Exiting.");
                                 return Ok(());
                             }
                         }
                     }
                     #[cfg(not(feature = "tui"))]
                     {
-                        println!("Usage: neuraldiff diff <MODEL_A> <MODEL_B>");
+                        eprintln!("Usage: neuraldiff diff <MODEL_A> <MODEL_B>");
                         return Ok(());
                     }
                 }
@@ -51,8 +60,8 @@ fn main() -> Result<()> {
                 #[cfg(not(feature = "tui"))]
                 {
                     let result = compute_diff(&path_a, &path_b)?;
-                    println!("Diff complete. {} layers.", result.layers.len());
-                    println!("Use --json for output or enable the tui feature.");
+                    eprintln!("Diff complete. {} layers.", result.layers.len());
+                    eprintln!("Use --json for output or enable the tui feature.");
                 }
             }
         }

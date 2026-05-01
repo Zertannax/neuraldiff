@@ -211,12 +211,22 @@ fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
                 SortMode::LayerIndex => SortMode::AnomalyScore,
                 SortMode::AnomalyScore => SortMode::L2Desc,
             };
+            // Sort reorders the list; the previous index now points at a different layer.
+            state.selected_layer = 0;
+            state.selected_tensor = 0;
+            state.show_heatmap = false;
+            state.heatmap_data = None;
         }
         KeyCode::Char('f') => {
             state.filter_mode = match state.filter_mode {
                 FilterMode::All => FilterMode::ChangedOnly,
                 FilterMode::ChangedOnly => FilterMode::All,
             };
+            // Filter shrinks the list; selected_layer can become out-of-bounds.
+            state.selected_layer = 0;
+            state.selected_tensor = 0;
+            state.show_heatmap = false;
+            state.heatmap_data = None;
         }
         KeyCode::Char('J') => {
             if let Some(ref diff) = state.diff {
@@ -1081,11 +1091,60 @@ fn format_params(n: u64) -> String {
 }
 
 fn truncate_path(path: &str, max_len: usize) -> String {
-    if path.len() <= max_len { path.to_string() }
-    else { format!("...{}", &path[path.len().saturating_sub(max_len - 3)..]) }
+    if path.len() <= max_len { return path.to_string(); }
+    let keep = max_len.saturating_sub(3);
+    let target = path.len().saturating_sub(keep);
+    // Slice on a char boundary to avoid panicking on multi-byte UTF-8.
+    let start = (target..=path.len())
+        .find(|&i| path.is_char_boundary(i))
+        .unwrap_or(path.len());
+    format!("...{}", &path[start..])
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len { s.to_string() }
-    else { format!("{}…", &s[..max_len.saturating_sub(1)]) }
+    if s.len() <= max_len { return s.to_string(); }
+    let keep = max_len.saturating_sub(1);
+    let end = (0..=keep).rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    format!("{}…", &s[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_str_handles_multibyte_utf8_at_boundary() {
+        // 'é' is 2 bytes; naive slice at byte 5 would panic mid-codepoint.
+        let s = "résumé.safetensors";
+        let out = truncate_str(s, 8);
+        assert!(out.ends_with('…'));
+        assert!(out.len() <= s.len());
+    }
+
+    #[test]
+    fn truncate_str_passthrough_when_short() {
+        assert_eq!(truncate_str("hi", 10), "hi");
+    }
+
+    #[test]
+    fn truncate_str_handles_emoji() {
+        let s = "model🚀checkpoint";
+        let _ = truncate_str(s, 7); // must not panic
+        let _ = truncate_str(s, 6);
+        let _ = truncate_str(s, 1);
+    }
+
+    #[test]
+    fn truncate_path_handles_multibyte_utf8_in_suffix() {
+        let p = "/home/Renée/models/bigfile.safetensors";
+        let out = truncate_path(p, 20);
+        assert!(out.starts_with("..."));
+    }
+
+    #[test]
+    fn truncate_path_passthrough_when_short() {
+        assert_eq!(truncate_path("/a/b", 100), "/a/b");
+    }
 }

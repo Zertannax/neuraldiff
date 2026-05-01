@@ -120,6 +120,10 @@ fn format_params(n: u64) -> String {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() }
-    else { format!("{}…", &s[..max - 1]) }
+    if s.len() <= max { return s.to_string(); }
+    let keep = max.saturating_sub(1);
+    let end = (0..=keep).rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    format!("{}…", &s[..end])
 }

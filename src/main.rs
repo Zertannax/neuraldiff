@@ -7,7 +7,6 @@ use neuraldiff::loader::load;
 #[cfg(feature = "tui")]
 use neuraldiff::tui;
 
-#[cfg(feature = "tui")]
 use neuraldiff::scanner;
 
 fn main() -> Result<()> {
@@ -87,6 +86,26 @@ fn main() -> Result<()> {
                 );
             }
             println!();
+        }
+
+        Commands::Scan => {
+            let models = scanner::scan_for_models()?;
+            if models.is_empty() {
+                println!("No .safetensors models found on this system.");
+                println!("Searched in: home, Downloads, Documents, Desktop, .cache/huggingface, and common drives.");
+            } else {
+                println!("Found {} model(s):\n", models.len());
+                println!("  {:<50}  {:>10}  {}", "Name", "Size", "Location");
+                println!("  {}", "─".repeat(100));
+                for m in models {
+                    println!(
+                        "  {:<50}  {:>10}  {}",
+                        truncate(&m.name, 50),
+                        scanner::format_size(m.size_mb),
+                        m.location
+                    );
+                }
+            }
         }
     }
 

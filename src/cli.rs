@@ -23,4 +23,5 @@ pub enum Commands {
     Inspect {
         model: PathBuf,
     },
+    Scan,
 }

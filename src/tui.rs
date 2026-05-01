@@ -50,21 +50,20 @@ pub fn run_app(mut state: AppState) -> Result<()> {
 pub fn run_with_loading(path_a: &Path, path_b: &Path) -> Result<()> {
     let mut terminal = setup_terminal()?;
 
-    let path_a = path_a.to_path_buf();
-    let path_b = path_b.to_path_buf();
+    let path_a_buf = path_a.to_path_buf();
+    let path_b_buf = path_b.to_path_buf();
+    let display_a = path_a_buf.display().to_string();
+    let display_b = path_b_buf.display().to_string();
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
-        let result = crate::diff::compute_diff(&path_a, &path_b);
+        let result = crate::diff::compute_diff(&path_a_buf, &path_b_buf);
         tx.send(result).ok();
     });
 
     let mut frame_idx: usize = 0;
     let tick = Duration::from_millis(80);
     let start = Instant::now();
-    // Store paths for the loading screen display
-    let display_a = path_a.display().to_string();
-    let display_b = path_b.display().to_string();
 
     // Loading loop
     let diff_result = loop {

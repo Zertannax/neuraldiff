@@ -95,7 +95,7 @@ pub fn load_tensor_data(snapshot: &ModelSnapshot, name: &str) -> Result<Vec<f32>
 
     let numel = meta.shape.iter().product::<usize>();
 
-    let f32_data = match meta.dtype {
+    let f32_data: Vec<f32> = match meta.dtype {
         DType::F32 => data.chunks_exact(4).map(read_f32_le).collect(),
         DType::F16 => data
             .chunks_exact(2)

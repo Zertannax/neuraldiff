@@ -68,24 +68,43 @@ fn get_scan_roots() -> Vec<(PathBuf, usize)> {
     let mut roots = Vec::new();
 
     if let Ok(current) = std::env::current_dir() {
-        roots.push((current, 3));
+        roots.push((current, 5));
     }
 
     if let Some(home) = dirs::home_dir() {
+        // Scan home directory itself (where git clone often puts repos)
+        roots.push((home.clone(), 2));
+
         // HuggingFace hub: hub/models--x--y/snapshots/hash/model.safetensors — needs depth 6
         roots.push((home.join(".cache/huggingface"), 6));
         roots.push((home.join(".cache/transformers"), 5));
 
         // Common user-created model dirs
-        for sub in &["Downloads", "Documents", "models", "AI", "ml"] {
-            roots.push((home.join(sub), 4));
+        for sub in &[
+            "Downloads", "Documents", "Desktop", "models", "AI", "ml",
+            "checkpoints", "weights", "huggingface", "transformers",
+        ] {
+            roots.push((home.join(sub), 5));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Scan common drives on Windows
+        for drive in &["C:\\", "D:\\", "E:\\"] {
+            let path = PathBuf::from(drive);
+            if path.exists() {
+                roots.push((path, 4));
+            }
         }
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        roots.push((PathBuf::from("/tmp"), 2));
-        roots.push((PathBuf::from("/models"), 3));
+        roots.push((PathBuf::from("/tmp"), 3));
+        roots.push((PathBuf::from("/models"), 4));
+        roots.push((PathBuf::from("/opt"), 4));
+        roots.push((PathBuf::from("/usr/share"), 3));
     }
 
     roots
@@ -111,7 +130,7 @@ pub fn format_size(size_mb: f64) -> String {
 }
 
 // Model Selection UI
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -221,6 +240,11 @@ enum SelectionAction {
 }
 
 fn handle_selection_key(key: KeyEvent, state: &mut ModelSelectionState) -> SelectionAction {
+    // Ignore key repeats and releases to avoid double-triggering on a single press
+    if key.kind != KeyEventKind::Press {
+        return SelectionAction::Continue;
+    }
+
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
         return SelectionAction::Cancel;
     }
@@ -451,4 +475,68 @@ fn draw_selection_footer(f: &mut Frame, area: Rect) {
         );
 
     f.render_widget(paragraph, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_scan_recursive() {
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("sub").join("deep");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(subdir.join("model.safetensors"), b"fake").unwrap();
+
+        let mut seen = HashSet::new();
+        let mut models = Vec::new();
+        scan_dir_recursive(dir.path(), 0, 5, &mut seen, &mut models);
+
+        assert_eq!(models.len(), 1);
+        assert!(models[0].path.ends_with("model.safetensors"));
+    }
+
+    #[test]
+    fn test_scan_respects_max_depth() {
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("sub").join("deep");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(subdir.join("model.safetensors"), b"fake").unwrap();
+
+        let mut seen = HashSet::new();
+        let mut models = Vec::new();
+        scan_dir_recursive(dir.path(), 0, 1, &mut seen, &mut models);
+
+        assert!(models.is_empty(), "Should not find models beyond max_depth");
+    }
+
+    #[test]
+    fn test_scan_skips_hidden_dirs() {
+        let dir = tempdir().unwrap();
+        let hidden = dir.path().join(".hidden").join("deep");
+        fs::create_dir_all(&hidden).unwrap();
+        fs::write(hidden.join("model.safetensors"), b"fake").unwrap();
+
+        let mut seen = HashSet::new();
+        let mut models = Vec::new();
+        scan_dir_recursive(dir.path(), 0, 5, &mut seen, &mut models);
+
+        assert!(models.is_empty(), "Should skip hidden directories");
+    }
+
+    #[test]
+    fn test_scan_allows_cache_dir() {
+        let dir = tempdir().unwrap();
+        let cache = dir.path().join(".cache").join("huggingface");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("model.safetensors"), b"fake").unwrap();
+
+        let mut seen = HashSet::new();
+        let mut models = Vec::new();
+        scan_dir_recursive(dir.path(), 0, 5, &mut seen, &mut models);
+
+        assert_eq!(models.len(), 1, "Should allow .cache directory");
+    }
 }

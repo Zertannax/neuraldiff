@@ -48,7 +48,7 @@ half = "2.4"
 
 # Logging/tracing
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Directory scanning
 dirs = "5.0"

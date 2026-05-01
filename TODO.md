@@ -17,8 +17,8 @@
 ### Corrections
 
 - [x] **Warnings** - Supprimés : imports Cell/Row/Table retirés, variable diff inutilisée corrigée
-- [ ] **Tests integration** - Tester end-to-end avec les fixtures LLaMA (tiny_model_a/b)
-- [ ] **Scan recursif** - Le scanner ne scanne qu'un niveau de profondeur, faire recursif
+- [x] **Tests integration** - Tester end-to-end avec les fixtures LLaMA (tiny_model_a/b)
+- [x] **Scan recursif** - Le scanner ne scanne qu'un niveau de profondeur, faire recursif
 
 ---
 

@@ -70,9 +70,12 @@ fn scan_dir_recursive(
 
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // Skip hidden dirs (except .cache which holds HuggingFace models)
             if name.starts_with('.') && name != ".cache" {
                 continue;
             }
+            // Skip huge dirs that never hold model checkpoints. Keeps WSL scans
+            // of /mnt/c/Users/* fast — AppData alone can be >300 GB of caches.
             if is_skip_dir(name) {
                 continue;
             }

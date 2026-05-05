@@ -7,6 +7,7 @@ pub mod terminal;
 pub mod tui;
 
 pub mod loader;
+pub mod checkpoint;
 pub mod diff;
 pub mod mapper;
 pub mod metrics;

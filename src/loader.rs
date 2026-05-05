@@ -9,6 +9,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub fn load(path: &Path) -> Result<ModelSnapshot> {
+    load_single(path)
+}
+
+fn load_single(path: &Path) -> Result<ModelSnapshot> {
     let file = File::open(path)
         .with_context(|| format!("Failed to open file: {}", path.display()))?;
     let mmap = Arc::new(unsafe { Mmap::map(&file)? });
@@ -23,18 +27,7 @@ pub fn load(path: &Path) -> Result<ModelSnapshot> {
         let numel = shape.iter().product::<usize>() as u64;
         total_params += numel;
 
-        let dtype = match view.dtype() {
-            safetensors::Dtype::F32 => DType::F32,
-            safetensors::Dtype::F16 => DType::F16,
-            safetensors::Dtype::BF16 => DType::BF16,
-            safetensors::Dtype::I64 => DType::I64,
-            safetensors::Dtype::I32 => DType::I32,
-            safetensors::Dtype::I16 => DType::I16,
-            safetensors::Dtype::I8 => DType::I8,
-            safetensors::Dtype::U8 => DType::U8,
-            safetensors::Dtype::BOOL => DType::Bool,
-            _ => DType::F32,
-        };
+        let dtype = decode_dtype(view.dtype());
 
         let data = view.data();
         let data_offset = data.as_ptr() as u64 - mmap.as_ptr() as u64;
@@ -47,6 +40,7 @@ pub fn load(path: &Path) -> Result<ModelSnapshot> {
                 dtype,
                 data_offset,
                 data_len: data.len() as u64,
+                shard_index: 0,
             },
         );
     }
@@ -55,8 +49,23 @@ pub fn load(path: &Path) -> Result<ModelSnapshot> {
         path: path.to_path_buf(),
         tensors: tensor_map,
         total_params,
-        mmap,
+        mmaps: vec![mmap],
     })
+}
+
+fn decode_dtype(dt: safetensors::Dtype) -> DType {
+    match dt {
+        safetensors::Dtype::F32 => DType::F32,
+        safetensors::Dtype::F16 => DType::F16,
+        safetensors::Dtype::BF16 => DType::BF16,
+        safetensors::Dtype::I64 => DType::I64,
+        safetensors::Dtype::I32 => DType::I32,
+        safetensors::Dtype::I16 => DType::I16,
+        safetensors::Dtype::I8 => DType::I8,
+        safetensors::Dtype::U8 => DType::U8,
+        safetensors::Dtype::BOOL => DType::Bool,
+        _ => DType::F32,
+    }
 }
 
 fn read_f32_le(data: &[u8]) -> f32 {
@@ -86,10 +95,21 @@ pub fn load_tensor_data(snapshot: &ModelSnapshot, name: &str) -> Result<Vec<f32>
         .get(name)
         .with_context(|| format!("Tensor '{}' not found in snapshot", name))?;
 
+    let mmap = snapshot
+        .mmaps
+        .get(meta.shard_index as usize)
+        .with_context(|| {
+            format!(
+                "Tensor '{}' references shard_index {} but snapshot has {} shards",
+                name,
+                meta.shard_index,
+                snapshot.mmaps.len()
+            )
+        })?;
+
     let start = meta.data_offset as usize;
     let end = start + meta.data_len as usize;
-    let data = snapshot
-        .mmap
+    let data = mmap
         .get(start..end)
         .with_context(|| format!("Tensor '{}' data range [{start}..{end}] out of mmap bounds", name))?;
 

@@ -9,7 +9,7 @@ pub struct ModelSnapshot {
     pub path: PathBuf,
     pub tensors: HashMap<String, TensorMeta>,
     pub total_params: u64,
-    pub mmap: Arc<Mmap>,
+    pub mmaps: Vec<Arc<Mmap>>,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ pub struct TensorMeta {
     pub dtype: DType,
     pub data_offset: u64,
     pub data_len: u64,
+    pub shard_index: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

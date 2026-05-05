@@ -1,8 +1,8 @@
 # NeuralDiff — Session context
 
-> Last updated: 2026-05-01
+> Last updated: 2026-05-05
 > Repo: **public** at https://github.com/Zertannax/neuraldiff
-> Latest release: **v0.2.0**
+> Latest release: **v0.2.1**
 > Current branch: `master`, in sync with `origin/master`
 
 ---
@@ -12,6 +12,27 @@
 The tool **works end-to-end on real models** (Qwen3-0.6B Base vs Instruct verified, 596M params, 8s diff). The repo is **public on GitHub**, tagged **v0.2.0**, with a complete README, brand kit, CI, and roadmap. Next milestones tracked in `TODO.md`.
 
 To continue work: `cd /mnt/c/Users/remic/neuraldiff` and look at the **"What's next"** section below.
+
+---
+
+## What got done (session 2026-05-05)
+
+5 commits, 46 tests green (33 baseline + 13 new), v0.2.1 released.
+
+### Multi-shard checkpoint support (v0.2.1)
+
+- **`neuraldiff diff`** now accepts directories, `model.safetensors.index.json` files, or shard files as input — auto-detected. Single-file path unchanged.
+- New `src/checkpoint.rs` resolves any input to `CheckpointSource::SingleFile | Sharded` via path logic only (8 unit tests in `tests/checkpoint_tests.rs`).
+- New `loader::load_sharded()` mmaps every shard listed in the index, validates each tensor is present, warns on extras, bails on name collisions, and merges into a unified `ModelSnapshot` (5 integration tests in `tests/multishard_tests.rs` using a programmatic fixture — no binary fixtures committed).
+- **Data model**: `ModelSnapshot.mmap: Arc<Mmap>` → `mmaps: Vec<Arc<Mmap>>`. `TensorMeta` gains `shard_index: u16` (max 65 535 shards — comfortable vs DeepSeek-R1's ~80). Single-file load is now a 1-shard case under the same code path.
+- **Scanner**: directories containing `model.safetensors.index.json` are surfaced as one entry (sum of `.safetensors` sizes at top level), individual shards inside are not listed.
+- **Verified end-to-end on Gemma 31B** — self-diff with 31.27B params produced exactly 0 deltas (μ=0.0, max=0.0). Real time: 14m05s on 28 GB RAM + 64 GB swap (peak RSS ~39 GB).
+- Spec: `docs/superpowers/specs/2026-05-05-multishard-support-design.md`. Plan: `docs/superpowers/plans/2026-05-05-multishard-support.md`.
+
+### Known follow-ups surfaced by the Gemma run
+
+- The mapper regex doesn't recognise Gemma tensor naming — only 4 logical "layers" detected for 31B. Falls into `LayerType::Other`. Add a Gemma arm to `LayerComponent` (mirror the LLaMA / GPT-2 / Falcon variants in `mapper.rs`) when it matters for a real diff.
+- `compute_diff` peak RAM ≈ 1.3× the BF16 model size (BF16 → F32 cast doubles, both A and B in flight under rayon). Streaming / per-tensor sequential mode would unblock <16 GB machines on 70B+ models. Phase 4 item.
 
 ---
 
@@ -106,7 +127,6 @@ Convenience script (gitignored): `./run-qwen.sh` runs the diff on those two path
 Roadmap is in `TODO.md`. Phase order:
 
 ### Phase 1 — finish v0.2.x (a few hours)
-- **Multi-shard support** — read `model.safetensors.index.json`, load all shards under one logical `ModelSnapshot`. Unblocks Llama 70B / Gemma 31B. **2-4h, biggest impact.**
 - **NaN / Inf detection (C14)** — currently propagates silently into JSON/CSV. Add `summary.nan_count`. **30 min.**
 - **C19** — `selected_tensor` bounds clamp after layer change. **10 min.**
 - **`--threshold` actually filters** — wired in CLI but pass-through. **15 min.**

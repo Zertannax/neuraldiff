@@ -9,7 +9,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub fn load(path: &Path) -> Result<ModelSnapshot> {
-    load_single(path)
+    use crate::checkpoint::{resolve, CheckpointSource};
+    match resolve(path)? {
+        CheckpointSource::SingleFile(p) => load_single(&p),
+        CheckpointSource::Sharded { index_path, root } => load_sharded(&index_path, &root),
+    }
 }
 
 fn load_single(path: &Path) -> Result<ModelSnapshot> {
@@ -50,6 +54,114 @@ fn load_single(path: &Path) -> Result<ModelSnapshot> {
         tensors: tensor_map,
         total_params,
         mmaps: vec![mmap],
+    })
+}
+
+fn load_sharded(index_path: &Path, root: &Path) -> Result<ModelSnapshot> {
+    use std::collections::BTreeMap;
+
+    let index_bytes = std::fs::read(index_path)
+        .with_context(|| format!("Failed to read index: {}", index_path.display()))?;
+    let index: serde_json::Value = serde_json::from_slice(&index_bytes)
+        .with_context(|| format!("Failed to parse index json: {}", index_path.display()))?;
+
+    let weight_map = index
+        .get("weight_map")
+        .and_then(|v| v.as_object())
+        .with_context(|| format!("index.json missing 'weight_map': {}", index_path.display()))?;
+
+    // Group tensors by shard filename, sorted for stable order.
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (tensor_name, shard_value) in weight_map {
+        let shard_name = shard_value
+            .as_str()
+            .with_context(|| format!("weight_map['{tensor_name}'] not a string"))?;
+        groups
+            .entry(shard_name.to_string())
+            .or_default()
+            .push(tensor_name.clone());
+    }
+
+    let mut mmaps: Vec<Arc<Mmap>> = Vec::with_capacity(groups.len());
+    let mut tensor_map: HashMap<String, TensorMeta> = HashMap::new();
+    let mut total_params: u64 = 0;
+
+    for (shard_idx, (shard_name, expected_tensors)) in groups.iter().enumerate() {
+        if shard_idx > u16::MAX as usize {
+            anyhow::bail!(
+                "too many shards ({}): max supported is {}",
+                groups.len(),
+                u16::MAX
+            );
+        }
+        let shard_path = root.join(shard_name);
+        let file = File::open(&shard_path)
+            .with_context(|| format!("missing shard: {}", shard_path.display()))?;
+        let mmap = Arc::new(unsafe { Mmap::map(&file)? });
+        let parsed = SafeTensors::deserialize(&mmap)
+            .with_context(|| format!("Failed to parse shard: {}", shard_path.display()))?;
+
+        let shard_tensors = parsed.tensors();
+
+        // Verify expected tensors are present in this shard.
+        let actual_names: std::collections::HashSet<&str> = shard_tensors
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        for expected in expected_tensors {
+            if !actual_names.contains(expected.as_str()) {
+                anyhow::bail!(
+                    "index references '{expected}' but it is not in shard {}",
+                    shard_path.display()
+                );
+            }
+        }
+        // Warn on extra tensors not declared in the index.
+        for (name, _) in &shard_tensors {
+            if !expected_tensors.iter().any(|e| e == name) {
+                tracing::warn!(
+                    "tensor '{}' present in {} but absent from index.json — keeping anyway",
+                    name,
+                    shard_path.display()
+                );
+            }
+        }
+
+        for (name, view) in shard_tensors {
+            if tensor_map.contains_key(&name) {
+                anyhow::bail!(
+                    "tensor name collision across shards: '{name}' in {}",
+                    shard_path.display()
+                );
+            }
+            let shape = view.shape().to_vec();
+            let numel = shape.iter().product::<usize>() as u64;
+            total_params += numel;
+            let dtype = decode_dtype(view.dtype());
+            let data = view.data();
+            let data_offset = data.as_ptr() as u64 - mmap.as_ptr() as u64;
+
+            tensor_map.insert(
+                name.to_string(),
+                TensorMeta {
+                    name: name.to_string(),
+                    shape,
+                    dtype,
+                    data_offset,
+                    data_len: data.len() as u64,
+                    shard_index: shard_idx as u16,
+                },
+            );
+        }
+
+        mmaps.push(mmap);
+    }
+
+    Ok(ModelSnapshot {
+        path: root.to_path_buf(),
+        tensors: tensor_map,
+        total_params,
+        mmaps,
     })
 }
 

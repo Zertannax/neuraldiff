@@ -41,6 +41,28 @@ fn scan_dir_recursive(
     if depth > max_depth {
         return;
     }
+
+    // If this dir is itself a sharded model, surface it as one entry and don't recurse.
+    let index_file = dir.join("model.safetensors.index.json");
+    if index_file.is_file() {
+        if seen.insert(dir.to_path_buf()) {
+            let total_size_mb = total_safetensors_size_mb(dir);
+            let name = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let location = format_location(dir.parent().unwrap_or(dir));
+            models.push(ModelInfo {
+                path: dir.to_path_buf(),
+                name,
+                size_mb: total_size_mb,
+                location,
+            });
+        }
+        return;
+    }
+
     let Ok(entries) = std::fs::read_dir(dir) else { return };
 
     for entry in entries.flatten() {
@@ -48,12 +70,9 @@ fn scan_dir_recursive(
 
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            // Skip hidden dirs (except .cache which holds HuggingFace models)
             if name.starts_with('.') && name != ".cache" {
                 continue;
             }
-            // Skip huge dirs that never hold model checkpoints. Keeps WSL scans
-            // of /mnt/c/Users/* fast — AppData alone can be >300 GB of caches.
             if is_skip_dir(name) {
                 continue;
             }
@@ -74,6 +93,22 @@ fn scan_dir_recursive(
             }
         }
     }
+}
+
+/// Sum the size in MB of every .safetensors file at the top level of `dir`.
+/// Used to display a meaningful size for sharded directories.
+fn total_safetensors_size_mb(dir: &Path) -> f64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0.0 };
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|e| e == "safetensors") {
+            if let Ok(meta) = path.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    total as f64 / (1024.0 * 1024.0)
 }
 
 /// Returns (root_dir, max_depth) pairs.
